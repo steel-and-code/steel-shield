@@ -1,0 +1,27 @@
+#!/usr/bin/bash
+# Steel Shield: optional "block dangerous websites" for every app.
+#   steel-shield-dns on       look websites up through Quad9 (blocks known malware
+#                             and phishing sites); needs admin rights (pkexec)
+#   steel-shield-dns off      back to the network's own lookups
+#   steel-shield-dns status   prints on or off
+# Uses NetworkManager's global DNS setting, which applies to every connection.
+set -euo pipefail
+CONF=/etc/NetworkManager/conf.d/90-steel-shield-dns.conf
+case "${1:-status}" in
+    on)
+        cat > "$CONF" <<'CONFEOF'
+# Steel Shield: block dangerous websites (Quad9, malware and phishing blocking).
+# Turn off in Steel Shield, or delete this file and restart the computer.
+[global-dns-domain-*]
+servers=9.9.9.9,149.112.112.112,2620:fe::fe,2620:fe::9
+CONFEOF
+        chmod 0644 "$CONF"
+        nmcli general reload dns-full 2>/dev/null || systemctl reload NetworkManager
+        echo on ;;
+    off)
+        rm -f "$CONF"
+        nmcli general reload dns-full 2>/dev/null || systemctl reload NetworkManager
+        echo off ;;
+    status) [[ -f "$CONF" ]] && echo on || echo off ;;
+    *) echo "usage: steel-shield-dns on|off|status" >&2; exit 2 ;;
+esac

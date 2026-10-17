@@ -1,0 +1,16 @@
+# Steel Shield: behaviour watching for this user: startup changes,
+# file scrambling, hidden miners, newly runnable downloads.
+[Unit]
+Description=Steel Shield behaviour watching
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionPathExists=!%h/.config/steel-shield/guard-off
+
+[Service]
+ExecStart=/usr/libexec/steel-shield-guard
+Restart=on-failure
+RestartSec=30
+Nice=10
+
+[Install]
+WantedBy=graphical-session.target

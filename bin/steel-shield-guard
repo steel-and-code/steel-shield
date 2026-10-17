@@ -1,0 +1,395 @@
+#!/usr/bin/bash
+# Steel Shield behaviour watching. A scanner only catches known
+# threats; this watches what programs do, the way macOS and Windows Defender
+# also watch behaviour. Runs as the logged-in user (steel-shield-guard.service)
+# and needs no admin rights: a user may pause and stop their own programs.
+#
+#   startup watch   something sets itself to start at login
+#   file guard      an untrusted program rewrites or renames many personal files
+#   miner watch     an untrusted program uses the processor heavily for minutes
+#   run check       a downloaded file is made runnable: check it and say so
+#
+# "Untrusted" means a program that runs from Downloads, a temporary folder or
+# elsewhere in the home folder (outside game libraries), a script there, or a
+# Windows program outside a game library. System programs and App Store apps
+# are only logged, never paused.
+#
+#   steel-shield-guard            run all watchers (the service does this)
+#   steel-shield-guard selftest   check the rules without a desktop (image build)
+
+set -uo pipefail
+
+APP="Steel Shield"
+ICON=steel-shield
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/steel-shield"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/steel-shield"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steel-shield"
+LOG="$STATE/history.log"
+ALLOWED_PROGS="$CONF/allowed-programs"
+BASELINE="$STATE/startup-baseline"
+COPIES="$STATE/startup-copies"
+REMOVED="$DATA/startup-removed"
+
+# File guard: this many existing personal files changed or renamed within the
+# window trips it. Miner watch: this much of one core for this many checks.
+GUARD_FILES="${STEEL_SHIELD_GUARD_FILES:-40}"
+GUARD_WINDOW=20
+MINER_PERCENT=70
+MINER_CHECKS=3
+MINER_INTERVAL=120
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
+
+notify() { # notify urgency title body [action=label ...] -> prints chosen action
+    local urgency="$1" title="$2" body="$3"; shift 3
+    local args=(--app-name="$APP" --icon="$ICON" --urgency="$urgency")
+    for a in "$@"; do args+=(--action="$a"); done
+    [[ $# -gt 0 ]] && args+=(--wait)
+    notify-send "${args[@]}" "$title" "$body" 2>/dev/null || true
+}
+
+# ---- Who is trusted ---------------------------------------------------------
+# Game libraries and app stores: high CPU and many writes are normal there.
+is_game_path() {
+    case "$1" in
+        */steamapps/*|*/.steam/*|"$HOME"/.local/share/Steam/*|"$HOME"/Games/*|"$HOME"/.var/app/*|\
+        "$HOME"/.local/share/lutris/*|"$HOME"/.local/share/bottles/*|"$HOME"/.config/heroic/*) return 0 ;;
+    esac
+    return 1
+}
+
+untrusted_path() { # a file path a program or script runs from
+    local p="$1"
+    is_game_path "$p" && return 1
+    case "$p" in
+        /tmp/*|/var/tmp/*|/dev/shm/*|/run/media/*|"$HOME"/*) return 0 ;;
+    esac
+    return 1
+}
+
+# Prints the path that decides trust for a process: its program, or the script
+# an interpreter (bash, python, node, perl, wine...) is running.
+process_origin() {
+    local pid="$1" exe arg
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)" || return 1
+    exe="${exe% (deleted)}"
+    case "${exe##*/}" in
+        bash|sh|dash|zsh|python3*|python|perl|node|ruby|php|lua*|wine*|wine64*)
+            while IFS= read -r -d '' arg; do
+                case "$arg" in
+                    /*|./*|*.exe|*.EXE|*.sh|*.py|*.js|*.pl)
+                        [[ "$arg" == ./* ]] && arg="$(readlink "/proc/$pid/cwd" 2>/dev/null)/${arg#./}"
+                        [[ "$arg" == /* ]] && { echo "$arg"; return 0; }
+                        ;;
+                esac
+            done < <(tail -z -n +2 "/proc/$pid/cmdline" 2>/dev/null)
+            ;;
+    esac
+    echo "$exe"
+}
+
+is_allowed_program() { grep -qxF "$1" "$ALLOWED_PROGS"; }
+
+suspicious_process() { # pid -> 0 if it should be paused and asked about
+    local pid="$1" origin exe
+    [[ "$pid" == "$$" || "$pid" == "$BASHPID" ]] && return 1
+    origin="$(process_origin "$pid")" || return 1
+    is_allowed_program "$origin" && return 1
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null)"
+    [[ "$exe" == *" (deleted)" ]] && return 0
+    untrusted_path "$origin"
+}
+
+program_name() { local o; o="$(process_origin "$1")"; echo "${o##*/}"; }
+
+pause_and_ask() { # pid signature title body
+    local pid="$1" sig="$2" title="$3" body="$4" origin kids
+    origin="$(process_origin "$pid")" || return 0
+    kids="$(pgrep -P "$pid" 2>/dev/null | tr '\n' ' ')"
+    kill -STOP "$pid" $kids 2>/dev/null || return 0
+    log "PAUSED $origin (pid $pid): $title"
+    (
+        choice="$(notify critical "$title" "$body Steel Shield paused it." "stop=Stop it" "allow=Allow it")"
+        case "$choice" in
+            allow)
+                echo "$origin" >> "$ALLOWED_PROGS"
+                kill -CONT "$pid" $kids 2>/dev/null
+                log "ALLOWED program $origin"
+                ;;
+            *)  # Stop, or the notification was dismissed: stop it and keep it safe.
+                kill -KILL "$pid" $kids 2>/dev/null
+                log "STOPPED $origin (pid $pid)"
+                if [[ -f "$origin" ]] && untrusted_path "$origin"; then
+                    /usr/bin/steel-shield quarantine-file "$origin" "$sig" >/dev/null 2>&1 || true
+                fi
+                ;;
+        esac
+    ) &
+}
+
+# ---- Startup watch ------------------------------------------------------------
+STARTUP_DIRS=("$HOME/.config/autostart" "$HOME/.config/systemd/user" "$HOME/.local/share/systemd/user"
+    "$HOME/.config/plasma-workspace/env" "$HOME/.config/plasma-workspace/shutdown" "$HOME/.config/environment.d")
+STARTUP_FILES=(.bashrc .bash_profile .profile .zshrc .zprofile .xprofile .xinitrc)
+
+startup_snapshot() { # prints "path<TAB>fingerprint", sorted
+    {
+        for d in "${STARTUP_DIRS[@]}"; do
+            [[ -d "$d" ]] || continue
+            find "$d" \( -type f -o -type l \) 2>/dev/null | while IFS= read -r f; do
+                if [[ -L "$f" ]]; then printf '%s\tlink:%s\n' "$f" "$(readlink "$f")"
+                else printf '%s\t%s\n' "$f" "$(sha256sum "$f" 2>/dev/null | cut -d' ' -f1)"; fi
+            done
+        done
+        for f in "${STARTUP_FILES[@]}"; do
+            [[ -f "$HOME/$f" ]] && printf '%s\t%s\n' "$HOME/$f" "$(sha256sum "$HOME/$f" | cut -d' ' -f1)"
+        done
+    } | sort
+}
+
+save_copy() { # keep a copy of login scripts so a change can be undone
+    local f="$1"
+    case "$f" in "$HOME"/.*) [[ -f "$f" ]] && cp -f -- "$f" "$COPIES/$(basename -- "$f")" ;; esac
+}
+
+describe_startup() { # path -> what will start, in plain words
+    local f="$1" name cmd
+    case "$f" in
+        *.desktop)
+            name="$(sed -n 's/^Name=//p' "$f" | head -1)"
+            cmd="$(sed -n 's/^Exec=//p' "$f" | head -1)" ;;
+        *.service|*.timer)
+            name="$(sed -n 's/^Description=//p' "$f" | head -1)"
+            cmd="$(sed -n 's/^ExecStart=//p' "$f" | head -1)" ;;
+        "$HOME"/.*)
+            name="a change to your login script $(basename -- "$f")"
+            cmd="$(diff "$COPIES/$(basename -- "$f")" "$f" 2>/dev/null | sed -n 's/^> //p' | head -3 | tr '\n' ' ')" ;;
+        *)  name="$(basename -- "$f")"; cmd="$(head -c 200 "$f" 2>/dev/null | tr '\n' ' ')" ;;
+    esac
+    printf '%s\t%s\n' "${name:-$(basename -- "$f")}" "${cmd:-unknown}"
+}
+
+startup_trusted() { # the command starts an App Store app, a system program or the OS itself
+    local cmd="$1" prog
+    case "$(basename -- "$2")" in steel-os-*|steel-shield*|io.github.ublue_os.yafti_gtk*|org.kde.*) return 0 ;; esac
+    prog="${cmd%% *}"
+    case "$cmd" in flatpak\ run*|/usr/bin/flatpak\ run*) return 0 ;; esac
+    case "$prog" in /usr/*|/opt/*) return 0 ;; esac
+    [[ "$prog" != /* ]] && [[ -n "$prog" ]] && command -v "$prog" 2>/dev/null | grep -q '^/usr/' && return 0
+    return 1
+}
+
+startup_remove() { # path: move it aside (recoverable) or undo a login-script change
+    local f="$1" id
+    id="$(date +%Y%m%d-%H%M%S)-$RANDOM"
+    mkdir -p "$REMOVED/$id"
+    case "$f" in
+        "$HOME"/.*)
+            cp -f -- "$f" "$REMOVED/$id/$(basename -- "$f")"
+            [[ -f "$COPIES/$(basename -- "$f")" ]] && cp -f -- "$COPIES/$(basename -- "$f")" "$f" ;;
+        *)
+            [[ "$f" == *.service || "$f" == *.timer ]] && systemctl --user disable --now "$(basename -- "$f")" 2>/dev/null
+            mv -f -- "$f" "$REMOVED/$id/" 2>/dev/null
+            find "$HOME/.config/systemd/user" -xtype l -delete 2>/dev/null
+            systemctl --user daemon-reload 2>/dev/null ;;
+    esac
+    echo "$f" > "$REMOVED/$id/from"
+    log "STARTUP REMOVED $f (kept in $REMOVED/$id)"
+}
+
+startup_check() {
+    local now added f fp name cmd
+    now="$(startup_snapshot)"
+    added="$(comm -13 "$BASELINE" <(echo "$now") | cut -f1 | sort -u)"
+    echo "$now" > "$BASELINE"
+    [[ -n "$added" ]] || return 0
+    while IFS= read -r f; do
+        [[ -e "$f" || -L "$f" ]] || continue
+        [[ "$f" == *.wants/* ]] && continue   # the unit itself is reported
+        IFS=$'\t' read -r name cmd < <(describe_startup "$f")
+        if startup_trusted "$cmd" "$f"; then
+            log "STARTUP added (trusted): $name — $cmd ($f)"
+            notify low "$name will start when you log in" "Turn it off any time in System Settings, Autostart."
+        else
+            log "STARTUP added: $name — $cmd ($f)"
+            (
+                choice="$(notify critical "Something set itself to start when you log in" \
+                    "$name: ${cmd:0:160}. If you didn't set this up, remove it." "remove=Remove" "keep=Keep")"
+                if [[ "$choice" == remove ]]; then startup_remove "$f"
+                else log "STARTUP kept $f"; fi
+                save_copy "$f"
+                startup_snapshot > "$BASELINE"
+            ) &
+        fi
+        save_copy "$f"
+    done <<< "$added"
+}
+
+startup_watch() {
+    for d in "${STARTUP_DIRS[@]:0:2}"; do mkdir -p "$d"; done
+    if [[ ! -s "$BASELINE" ]]; then
+        startup_snapshot > "$BASELINE"
+        for f in "${STARTUP_FILES[@]}"; do save_copy "$HOME/$f"; done
+        log "STARTUP watch started (first look at what starts at login)"
+    else
+        startup_check
+    fi
+    local dirs=()
+    for d in "${STARTUP_DIRS[@]}"; do [[ -d "$d" ]] && dirs+=("$d"); done
+    # The startup folders recursively, and the home folder itself (only its
+    # login scripts) without descending into it.
+    {
+        inotifywait -m -q -r -e close_write -e moved_to -e create -e attrib --format '%w%f' "${dirs[@]}" 2>/dev/null &
+        inotifywait -m -q -e close_write -e moved_to --format '%w%f' "$HOME" 2>/dev/null &
+        wait
+    } | while read -r path; do
+        case "$path" in
+            "$HOME"/.config/*|"$HOME"/.local/share/systemd/*) ;;
+            "$HOME"/.bashrc|"$HOME"/.bash_profile|"$HOME"/.profile|"$HOME"/.zshrc|"$HOME"/.zprofile|"$HOME"/.xprofile|"$HOME"/.xinitrc) ;;
+            *) continue ;;
+        esac
+        while read -r -t 5 _; do :; done   # let the writer finish
+        startup_check
+    done
+}
+
+# ---- File guard (ransomware-like behaviour) ---------------------------------
+personal_dirs() {
+    local d
+    for k in DOCUMENTS DESKTOP PICTURES MUSIC VIDEOS; do
+        d="$(xdg-user-dir "$k" 2>/dev/null)"
+        [[ -n "$d" && "$d" != "$HOME" && -d "$d" ]] && echo "$d"
+    done
+}
+
+writers_into() { # pids of this user's processes with files open in the given dirs
+    local pid fd target d
+    for pid in $(pgrep -u "$UID"); do
+        for fd in /proc/"$pid"/fd/*; do
+            target="$(readlink "$fd" 2>/dev/null)" || continue
+            for d in "$@"; do
+                [[ "$target" == "$d"/* ]] && { echo "$pid"; continue 3; }
+            done
+        done
+    done
+}
+
+top_writers() { # pids that wrote more than 1 MB in the last two seconds
+    local pid before=() a b
+    declare -A start
+    for pid in $(pgrep -u "$UID"); do
+        start[$pid]="$(sed -n 's/^write_bytes: //p' "/proc/$pid/io" 2>/dev/null)"
+    done
+    sleep 2
+    for pid in "${!start[@]}"; do
+        a="${start[$pid]:-0}"; b="$(sed -n 's/^write_bytes: //p' "/proc/$pid/io" 2>/dev/null)"
+        [[ -n "$b" && $((b - a)) -gt 1048576 ]] && echo "$pid"
+    done
+}
+
+file_guard() {
+    mapfile -t dirs < <(personal_dirs)
+    [[ ${#dirs[@]} -gt 0 ]] || return 0
+    declare -A created
+    local count=0 start ev path now cooldown=0
+    start="$(date +%s)"
+    inotifywait -m -q -r -e create -e close_write -e moved_to --format '%e|%w%f' "${dirs[@]}" 2>/dev/null |
+    while IFS='|' read -r ev path; do
+        now="$(date +%s)"
+        if (( now - start > GUARD_WINDOW )); then start="$now"; count=0; created=(); fi
+        case "$ev" in
+            CREATE*) created["$path"]=1; continue ;;
+            CLOSE_WRITE*) [[ -n "${created[$path]:-}" ]] && continue ;;   # a new file, not a changed one
+        esac
+        count=$((count + 1))
+        (( count < GUARD_FILES || now < cooldown )) && continue
+        cooldown=$((now + 60)); count=0
+        local suspects=() pid
+        for pid in $( { writers_into "${dirs[@]}"; top_writers; } | sort -u); do
+            suspicious_process "$pid" && suspects+=("$pid")
+        done
+        if [[ ${#suspects[@]} -eq 0 ]]; then
+            log "FILE GUARD: many personal files changed at once; no untrusted program found (system or allowed program)"
+            continue
+        fi
+        for pid in "${suspects[@]}"; do
+            pause_and_ask "$pid" "Behaviour.Ransomware-like" \
+                "A program is changing many of your files" \
+                "$(program_name "$pid") changed or renamed $GUARD_FILES or more of your files in seconds, the way ransomware does. If you didn't start a big edit or backup with it, stop it."
+        done
+    done
+}
+
+# ---- Miner watch --------------------------------------------------------------
+miner_watch() {
+    declare -A last hot
+    local hz pid ticks prev pct name
+    hz="$(getconf CLK_TCK)"
+    while true; do
+        for pid in $(pgrep -u "$UID"); do
+            ticks="$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null)" || continue
+            prev="${last[$pid]:-}"; last[$pid]="$ticks"
+            [[ -n "$prev" ]] || continue
+            pct=$(( (ticks - prev) * 100 / hz / MINER_INTERVAL ))
+            name="$(cat "/proc/$pid/comm" 2>/dev/null)"
+            if (( pct >= MINER_PERCENT )) && { suspicious_process "$pid" || [[ "$name" =~ ^(xmrig|minerd|cpuminer|xmr-stak|nbminer|lolminer|t-rex|phoenixminer|teamredminer|srbminer) ]]; }; then
+                hot[$pid]=$(( ${hot[$pid]:-0} + 1 ))
+                if (( hot[$pid] >= MINER_CHECKS )); then
+                    unset 'hot[$pid]'
+                    is_allowed_program "$(process_origin "$pid")" && continue
+                    pause_and_ask "$pid" "Behaviour.CoinMiner-like" \
+                        "A hidden program is working your processor hard" \
+                        "$(program_name "$pid") has used the processor heavily for $((MINER_CHECKS * MINER_INTERVAL / 60)) minutes from $(dirname -- "$(process_origin "$pid")"), the way hidden cryptocurrency miners do."
+                fi
+            else
+                unset 'hot[$pid]'
+            fi
+        done
+        sleep "$MINER_INTERVAL"
+    done
+}
+
+# ---- Run check: a downloaded file is made runnable -----------------------------
+run_check() {
+    local downloads f
+    downloads="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
+    mkdir -p "$downloads"
+    inotifywait -m -q -r -e attrib --format '%w%f' "$downloads" 2>/dev/null | while read -r f; do
+        [[ -f "$f" && -x "$f" ]] || continue
+        grep -qxF "$f" "$STATE/run-checked" 2>/dev/null && continue
+        echo "$f" >> "$STATE/run-checked"
+        /usr/bin/steel-shield quarantine-scan "$f" >/dev/null 2>&1 || true
+        [[ -e "$f" ]] || continue   # it was a known threat and is now in quarantine
+        log "RUN CHECK $f: no known threats"
+        notify normal "$(basename -- "$f") can now run" \
+            "It came from the internet. Steel Shield checked it and found no known threats. Only run programs from people and websites you trust."
+    done
+}
+
+# ---- Self-test for the image build -------------------------------------------
+selftest() {
+    local fail=0
+    check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
+    HOME=/home/test
+    check "a program in Downloads is untrusted"       'untrusted_path /home/test/Downloads/x'
+    check "a program in /tmp is untrusted"            'untrusted_path /tmp/x'
+    check "a system program is trusted"               '! untrusted_path /usr/bin/rsync'
+    check "a Steam game is trusted"                   '! untrusted_path /home/test/.local/share/Steam/steamapps/common/g/g.exe'
+    check "a Lutris game is trusted"                  '! untrusted_path /home/test/Games/wow/wow.exe'
+    check "a Flatpak app autostart is trusted"        'startup_trusted "flatpak run com.discordapp.Discord" x.desktop'
+    check "a system program autostart is trusted"     'startup_trusted "/usr/bin/steam -silent" steam.desktop'
+    check "a home-folder autostart is not trusted"    '! startup_trusted "/home/test/.cache/x/run" x.desktop'
+    check "Steel OS autostart entries are trusted"    'startup_trusted "anything" steel-os-portal.desktop'
+    [[ $fail -eq 0 ]] && echo "Steel Shield guard self-test passed" || { echo "Steel Shield guard self-test FAILED" >&2; return 1; }
+}
+
+case "${1:-run}" in
+    run)
+        [[ -f "$CONF/guard-off" ]] && { echo "Behaviour watching is off."; exit 0; }
+        mkdir -p "$DATA" "$STATE" "$CONF" "$COPIES" "$REMOVED"
+        touch "$ALLOWED_PROGS" "$LOG"
+        startup_watch & file_guard & miner_watch & run_check &
+        wait ;;
+    selftest) selftest ;;
+    *) echo "usage: steel-shield-guard [run|selftest]" >&2; exit 2 ;;
+esac

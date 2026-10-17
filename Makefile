@@ -5,6 +5,11 @@ DESTDIR ?=
 
 install:
 	install -D -m 0755 bin/steel-shield $(DESTDIR)$(PREFIX)/bin/steel-shield
+	install -D -m 0755 bin/steel-shield-guard $(DESTDIR)$(PREFIX)/libexec/steel-shield-guard
+	install -D -m 0755 bin/steel-shield-dns $(DESTDIR)$(PREFIX)/libexec/steel-shield-dns
+	install -D -m 0755 bin/steel-shield-extra $(DESTDIR)$(PREFIX)/libexec/steel-shield-extra
+	install -d $(DESTDIR)$(PREFIX)/lib/systemd/system
+	install -m 0644 systemd/system/* $(DESTDIR)$(PREFIX)/lib/systemd/system/
 	install -d $(DESTDIR)$(PREFIX)/lib/systemd/user
 	install -m 0644 systemd/user/* $(DESTDIR)$(PREFIX)/lib/systemd/user/
 	install -D -m 0644 share/applications/steel-shield.desktop $(DESTDIR)$(PREFIX)/share/applications/steel-shield.desktop
@@ -13,6 +18,8 @@ install:
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/steel-shield
+	rm -f $(DESTDIR)$(PREFIX)/libexec/steel-shield-guard $(DESTDIR)$(PREFIX)/libexec/steel-shield-dns $(DESTDIR)$(PREFIX)/libexec/steel-shield-extra
+	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/steel-shield-extra.*
 	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/user/steel-shield-*
 	rm -f $(DESTDIR)$(PREFIX)/share/applications/steel-shield.desktop
 	rm -f $(DESTDIR)$(PREFIX)/share/kio/servicemenus/steel-shield.desktop
@@ -20,3 +27,5 @@ uninstall:
 
 test:
 	bash tests/selftest.sh bin/steel-shield
+	bash bin/steel-shield-guard selftest
+	bash -n bin/steel-shield-dns && bash -n bin/steel-shield-extra

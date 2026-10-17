@@ -1,0 +1,10 @@
+# Steel Shield: fetch the extra list of new threats (abuse.ch).
+[Unit]
+Description=Steel Shield extra threat list
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=19
+ExecStart=/usr/libexec/steel-shield-extra

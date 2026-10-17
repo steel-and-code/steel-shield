@@ -29,6 +29,31 @@ systems.
 Virus definitions come from ClamAV (Cisco Talos) and update every hour through
 ClamAV's own `freshclam` service.
 
+## Behaviour watching
+
+Definitions only know threats that have been seen before, so Steel Shield also
+watches what programs do. A program counts as **untrusted** when it runs from
+Downloads, a temporary folder or elsewhere in the home folder (game libraries
+excluded), or is a script or Windows program there. System programs and
+Flatpak apps are never paused.
+
+- **Startup watch:** something new set to start at login (autostart entry,
+  user service, login script). App Store and system programs get a quiet
+  note; anything else asks **Remove** or **Keep** (removal is recoverable).
+- **File guard:** an untrusted program changing or renaming 40+ files in
+  Documents, Desktop, Pictures, Music or Videos within 20 seconds is paused:
+  **Stop it** (it goes to quarantine) or **Allow it**.
+- **Miner watch:** an untrusted program, or a known miner, using 70%+ of a
+  core for 6 minutes is paused with the same choice.
+- **Run check:** a download made runnable is scanned at once.
+- **Extra threat list:** a daily list of new malware fingerprints from abuse.ch
+  MalwareBazaar, fetched by `steel-shield-extra.timer`.
+- **Block dangerous websites (optional):** a dashboard switch that uses
+  Quad9's malware-blocking DNS for every app, through NetworkManager.
+
+Enable with `systemctl --global enable steel-shield-guard.service` and
+`sudo systemctl enable --now steel-shield-extra.timer`.
+
 ## Requirements
 
 - systemd (user services)
