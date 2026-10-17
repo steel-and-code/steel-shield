@@ -1,0 +1,24 @@
+#!/usr/bin/bash
+# Steel Shield: fetch the extra list of new threats once a day.
+# The list is fingerprints (SHA-256) of fresh malware samples from abuse.ch
+# MalwareBazaar, published daily by Steel & Code and served from
+# downloads.steel-os.org. ClamAV loads every .hsb file in its database folder,
+# so Steel Shield scans against it automatically. A missing or broken list is
+# skipped; the main definitions are untouched.
+set -euo pipefail
+URL="https://downloads.steel-os.org/shield/steel-shield-extra.hsb"
+DEST=/var/lib/clamav/steel-shield-extra.hsb
+tmp="$(mktemp)"
+trap 'rm -f "$tmp"' EXIT
+if ! curl --proto '=https' -fsSL --max-time 300 -o "$tmp" "$URL"; then
+    echo "Steel Shield extra list: not available right now; keeping the current one."
+    exit 0
+fi
+# Every line must be "64 hex characters:*:name:73".
+if [[ ! -s "$tmp" ]] || grep -qvE '^[0-9a-f]{64}:\*:[A-Za-z0-9._-]+:73$' "$tmp"; then
+    echo "Steel Shield extra list: download looked wrong; keeping the current one." >&2
+    exit 0
+fi
+install -m 0644 -o root -g root "$tmp" "$DEST.new"
+mv -f "$DEST.new" "$DEST"
+echo "Steel Shield extra list: $(wc -l < "$DEST") fingerprints."
