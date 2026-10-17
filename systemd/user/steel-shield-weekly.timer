@@ -1,0 +1,12 @@
+# Steel Shield: weekly scan, Tuesday afternoon (after the 4 am
+# update), or soon after the next start if the PC was off.
+[Unit]
+Description=Steel Shield: weekly scan
+
+[Timer]
+OnCalendar=Tue *-*-* 14:00:00
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

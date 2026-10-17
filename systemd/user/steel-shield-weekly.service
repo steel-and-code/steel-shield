@@ -1,0 +1,10 @@
+# Steel Shield: weekly scan of the home folder, lowest priority,
+# waits while a game is running.
+[Unit]
+Description=Steel Shield: weekly scan
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/bin/steel-shield weekly

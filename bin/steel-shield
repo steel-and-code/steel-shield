@@ -1,0 +1,392 @@
+#!/usr/bin/bash
+# Steel Shield: lightweight, honest virus protection for Linux.
+# https://github.com/steel-and-code/steel-shield
+#
+# The engine is ClamAV (clamscan), with definitions from Cisco Talos updated
+# hourly by clamav-freshclam. clamscan runs only while it is scanning, then
+# exits, so nothing sits in memory between scans. Every scan runs at the
+# lowest CPU and disk priority.
+#
+#   steel-shield                    the dashboard
+#   steel-shield scan PATH...       scan files or folders now (with a report)
+#   steel-shield watch-downloads    background: scan new files in Downloads
+#   steel-shield usb-check          background: offer to scan new USB drives
+#   steel-shield scan-usb MOUNT     scan one drive, risky files first
+#   steel-shield weekly             background: scan the home folder
+#   steel-shield restore ID         put a quarantined file back
+#   steel-shield delete ID          delete a quarantined file for good
+#   steel-shield allow ID           restore and never flag this file again
+#   steel-shield status             one line per check, for scripts
+#
+# Detected files are moved to a quarantine folder, never deleted silently.
+
+set -uo pipefail
+
+APP="Steel Shield"
+ICON=steel-shield
+DATA="${XDG_DATA_HOME:-$HOME/.local/share}/steel-shield"
+QUAR="$DATA/quarantine"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/steel-shield"
+CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steel-shield"
+ALLOWED="$CONF/allowed-sha256"
+LOG="$STATE/history.log"
+DBDIR="${STEEL_SHIELD_DB:-/var/lib/clamav}"
+DOWNLOADS="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
+mkdir -p "$QUAR" "$STATE" "$CONF"
+chmod 0700 "$DATA" "$QUAR" 2>/dev/null || true
+touch "$ALLOWED" "$LOG"
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M')" "$*" >> "$LOG"; }
+
+notify() { # notify urgency title body [action=label ...] -> prints chosen action
+    local urgency="$1" title="$2" body="$3"; shift 3
+    local args=(--app-name="$APP" --icon="$ICON" --urgency="$urgency")
+    for a in "$@"; do args+=(--action="$a"); done
+    [[ $# -gt 0 ]] && args+=(--wait)
+    notify-send "${args[@]}" "$title" "$body" 2>/dev/null || true
+}
+
+# ---- Plain-English explanation of a ClamAV signature name -----------------
+explain() {
+    local sig="$1" lower platform kind
+    lower="$(tr '[:upper:]' '[:lower:]' <<< "$sig")"
+    if [[ "$lower" == *eicar* ]]; then
+        echo "the harmless EICAR test file, used everywhere to check that virus protection works. It can't do any harm."
+        return
+    fi
+    case "$lower" in
+        pua.*|*.pua.*)          platform="a program or file" ;;
+        win.*|*win32*|*w32*)    platform="a Windows program" ;;
+        unix.*|linux.*|elf.*)   platform="a Linux program" ;;
+        osx.*|macos.*)          platform="a Mac program" ;;
+        andr.*|android.*)       platform="an Android app" ;;
+        doc.*|xls.*|ppt.*|*vba*) platform="an Office document" ;;
+        pdf.*)                  platform="a PDF document" ;;
+        html.*|js.*|php.*|*script*) platform="a web page or script" ;;
+        email.*)                platform="an email" ;;
+        *)                      platform="a file" ;;
+    esac
+    case "$lower" in
+        *ransom*)               kind="that locks or scrambles your files and demands payment" ;;
+        *phish*)                kind="made to trick you into giving away passwords or card details" ;;
+        *keylog*|*spy*|*steal*|*infostealer*|*password*) kind="that steals passwords or watches what you type" ;;
+        *backdoor*|*rat.*|*remote*) kind="that lets a stranger control the computer" ;;
+        *coinminer*|*miner*)    kind="that secretly uses the computer to mine cryptocurrency" ;;
+        *downloader*|*dropper*|*loader*) kind="that downloads more harmful software" ;;
+        *worm*)                 kind="that spreads itself to other computers" ;;
+        *exploit*|*cve*)        kind="that attacks a weakness in other software" ;;
+        *adware*|pua.*|*.pua.*) kind="that is potentially unwanted: it shows ads or does things you probably didn't ask for" ;;
+        *trojan*)               kind="that pretends to be something useful but harms the computer" ;;
+        *)                      kind="that contains known harmful code" ;;
+    esac
+    local note=""
+    [[ "$platform" == "a Windows program" ]] && note=" It can't run on Linux, but it could harm a Windows PC if copied there."
+    echo "$platform $kind.$note"
+}
+
+# ---- Scanning ---------------------------------------------------------------
+# Runs clamscan at the lowest priority on the given paths (or a file list with
+# -f). Prints "path<TAB>signature" for each detection.
+run_clamscan() {
+    local db_args=()
+    [[ -n "${STEEL_SHIELD_DB:-}" ]] && db_args=(-d "$STEEL_SHIELD_DB")
+    # clamscan exits 1 when it finds something; that is a result, not an error.
+    { nice -n 19 ionice -c 3 clamscan --no-summary --infected --stdout "${db_args[@]}" "$@" 2>/dev/null || true; } \
+        | sed -n 's/^\(.*\): \(.*\) FOUND$/\1\t\2/p'
+}
+
+is_allowed() {
+    local sum
+    sum="$(sha256sum "$1" 2>/dev/null | cut -d' ' -f1)" || return 1
+    grep -qx "$sum" "$ALLOWED"
+}
+
+quarantine() { # quarantine path signature -> prints id
+    local path="$1" sig="$2" id
+    id="$(date +%Y%m%d-%H%M%S)-$RANDOM"
+    mkdir -p "$QUAR/$id"
+    if mv -f -- "$path" "$QUAR/$id/file"; then
+        chmod 0400 "$QUAR/$id/file"
+        printf 'path=%s\nsignature=%s\ndate=%s\nsha256=%s\n' "$path" "$sig" "$(date '+%Y-%m-%d %H:%M')" \
+            "$(sha256sum "$QUAR/$id/file" | cut -d' ' -f1)" > "$QUAR/$id/info"
+        log "QUARANTINED $path ($sig) as $id"
+        echo "$id"
+    else
+        rmdir "$QUAR/$id" 2>/dev/null
+        log "COULD NOT MOVE $path ($sig)"
+        return 1
+    fi
+}
+
+info_get() { sed -n "s/^$2=//p" "$QUAR/$1/info" 2>/dev/null | head -1; }
+
+handle_detections() { # reads "path<TAB>sig" lines; quarantines and notifies
+    local count=0 path sig id what
+    while IFS=$'\t' read -r path sig; do
+        [[ -n "$path" && -e "$path" ]] || continue
+        if is_allowed "$path"; then log "ALLOWED (skipped) $path"; continue; fi
+        id="$(quarantine "$path" "$sig")" || continue
+        count=$((count + 1))
+        what="$(explain "$sig")"
+        (
+            choice="$(notify critical "Threat removed: $(basename -- "$path")" \
+                "It was $what It has been moved to quarantine. Nothing was deleted." \
+                "restore=Restore" "details=Details")"
+            case "$choice" in
+                restore) "$0" restore "$id" ;;
+                details) "$0" details "$id" ;;
+            esac
+        ) &
+    done
+    echo "$count" > "$STATE/last-found"
+    return 0
+}
+
+record_scan() { # record_scan what
+    date '+%Y-%m-%d %H:%M' > "$STATE/last-scan"
+    echo "$1" > "$STATE/last-scan-what"
+}
+
+game_running() {
+    pgrep -f 'steamapps/common|SteamLaunch|gamescope' >/dev/null 2>&1
+}
+
+# ---- Background jobs --------------------------------------------------------
+watch_downloads() {
+    mkdir -p "$DOWNLOADS"
+    [[ -f "$CONF/downloads-off" ]] && { echo "Download scanning is off."; exit 0; }
+    inotifywait -m -q -e close_write -e moved_to --format '%w%f' "$DOWNLOADS" | while true; do
+        batch=()
+        read -r first || exit 0
+        batch+=("$first")
+        # Gather whatever else lands in the next three seconds.
+        while read -r -t 3 more; do batch+=("$more"); done
+        files=()
+        for f in "${batch[@]}"; do
+            case "$f" in *.part|*.crdownload|*.tmp|*.download|*/.*) continue ;; esac
+            [[ -f "$f" ]] && files+=("$f")
+        done
+        [[ ${#files[@]} -gt 0 ]] || continue
+        run_clamscan "${files[@]}" | handle_detections
+        record_scan "Downloads"
+    done
+}
+
+usb_check() {
+    local base="/run/media/$USER" seen="$STATE/seen-drives" mp
+    touch "$seen"
+    [[ -d "$base" ]] || exit 0
+    for mp in "$base"/*; do
+        [[ -d "$mp" ]] || continue
+        grep -qxF "$mp" "$seen" && continue
+        echo "$mp" >> "$seen"
+        (
+            choice="$(notify normal "Scan this drive?" \
+                "$(basename -- "$mp") was plugged in. Steel Shield can check it for viruses, starting with programs and documents." \
+                "scan=Scan" "later=Not now")"
+            [[ "$choice" == scan ]] && "$0" scan-usb "$mp"
+        ) &
+    done
+    # Forget drives that were removed, so they are offered again next time.
+    while read -r mp; do [[ -d "$mp" ]] || sed -i "\|^$mp\$|d" "$seen"; done < <(cat "$seen")
+}
+
+scan_usb() {
+    local mp="$1" risky rest found
+    risky="$(mktemp)"; rest="$(mktemp)"
+    find "$mp" -type f \( -iname '*.exe' -o -iname '*.msi' -o -iname '*.dll' -o -iname '*.scr' \
+        -o -iname '*.bat' -o -iname '*.cmd' -o -iname '*.ps1' -o -iname '*.vbs' -o -iname '*.js' \
+        -o -iname '*.lnk' -o -iname '*.zip' -o -iname '*.rar' -o -iname '*.7z' -o -iname '*.iso' \
+        -o -iname '*.doc*' -o -iname '*.xls*' -o -iname '*.ppt*' -o -iname '*.pdf' -o -iname '*.sh' \
+        -o -iname 'autorun.inf' \) 2>/dev/null > "$risky"
+    find "$mp" -type f 2>/dev/null | grep -vxF -f "$risky" > "$rest" || true
+    notify low "Scanning $(basename -- "$mp")" "Programs and documents first, then everything else."
+    { run_clamscan -f "$risky"; run_clamscan -f "$rest"; } | handle_detections
+    found="$(cat "$STATE/last-found" 2>/dev/null || echo 0)"
+    record_scan "USB drive $(basename -- "$mp")"
+    [[ "$found" == 0 ]] && notify low "$(basename -- "$mp") is clean" "No threats found."
+    rm -f "$risky" "$rest"
+}
+
+weekly() {
+    local tries=0
+    while game_running; do
+        tries=$((tries + 1)); [[ $tries -gt 12 ]] && { log "WEEKLY skipped: a game was running all afternoon"; exit 0; }
+        sleep 1800
+    done
+    run_clamscan -r \
+        --exclude-dir='/\.git$' --exclude-dir='/node_modules$' --exclude-dir='/\.cache$' \
+        --exclude-dir='/\.local/share/Steam$' --exclude-dir='/\.var/app$' \
+        --exclude-dir='/\.local/share/flatpak$' --exclude-dir='/\.local/share/steel-shield$' \
+        --exclude-dir='/Games$' --exclude-dir='/\.local/share/containers$' \
+        "$HOME" | handle_detections
+    record_scan "Weekly scan of your home folder"
+    log "WEEKLY scan finished, found $(cat "$STATE/last-found" 2>/dev/null || echo 0)"
+}
+
+# ---- Quarantine actions -----------------------------------------------------
+restore() { # restore id [allow]
+    local id="$1" path dest
+    [[ -f "$QUAR/$id/file" ]] || { notify normal "Not found" "That item is no longer in quarantine."; return 1; }
+    path="$(info_get "$id" path)"
+    dest="$path"
+    [[ -e "$dest" ]] && dest="${path%.*} (restored).${path##*.}"
+    mkdir -p "$(dirname -- "$dest")"
+    chmod 0600 "$QUAR/$id/file"
+    mv -f -- "$QUAR/$id/file" "$dest"
+    if [[ "${2:-}" == allow ]]; then
+        info_get "$id" sha256 >> "$ALLOWED"
+        log "ALLOWED $dest"
+    fi
+    rm -rf "${QUAR:?}/$id"
+    log "RESTORED $dest"
+    notify normal "File restored" "$(basename -- "$dest") is back in $(dirname -- "$dest")."
+}
+
+delete_item() {
+    local id="$1"
+    [[ -d "$QUAR/$id" ]] || return 1
+    log "DELETED $(info_get "$id" path)"
+    rm -rf "${QUAR:?}/$id"
+}
+
+details() {
+    local id="$1" path sig
+    path="$(info_get "$id" path)"; sig="$(info_get "$id" signature)"
+    kdialog --title "$APP" --icon "$ICON" --yes-label "Keep it in quarantine" --no-label "Restore it" --yesno \
+"<h3>$(basename -- "$path")</h3>
+<p><b>What it is:</b> $(explain "$sig")</p>
+<p><b>Where it was:</b> $(dirname -- "$path")</p>
+<p><b>Found:</b> $(info_get "$id" date)</p>
+<p><b>Why it was flagged:</b> it matches a known threat in the virus definitions.</p>
+<p><b>What Steel Shield did:</b> moved it to quarantine, where it can't run. Nothing was deleted.</p>
+<p><b>What to do:</b> nothing, if you didn't expect this file. If you trust it (for example a game mod or a tool you know), restore it.</p>
+<p><small>Technical name: $sig</small></p>" || restore "$id"
+}
+
+# ---- Health and dashboard ---------------------------------------------------
+defs_age_hours() {
+    local newest
+    newest="$(stat -c %Y "$DBDIR"/daily.c?d "$DBDIR"/main.c?d 2>/dev/null | sort -n | tail -1)"
+    [[ -n "$newest" ]] || { echo -1; return; }
+    echo $(( ($(date +%s) - newest) / 3600 ))
+}
+
+status_lines() { # prints "ok|warn<TAB>text" lines
+    local age
+    age="$(defs_age_hours)"
+    if (( age < 0 )); then echo -e "warn\tVirus definitions haven't downloaded yet. Check the internet connection."
+    elif (( age > 48 )); then echo -e "warn\tVirus definitions are $((age / 24)) days old."
+    else echo -e "ok\tVirus definitions are up to date (checked hourly)."; fi
+    if systemctl is-active --quiet clamav-freshclam.service; then echo -e "ok\tThe definitions updater is running."
+    else echo -e "warn\tThe definitions updater isn't running."; fi
+    if [[ -f "$CONF/downloads-off" ]]; then echo -e "warn\tDownload scanning is switched off."
+    elif systemctl --user is-active --quiet steel-shield-downloads.service; then echo -e "ok\tNew downloads are scanned automatically."
+    else echo -e "warn\tDownload scanning isn't running."; fi
+    if [[ -f "$STATE/last-scan" ]]; then echo -e "ok\tLast scan: $(cat "$STATE/last-scan-what" 2>/dev/null), $(cat "$STATE/last-scan")."
+    else echo -e "ok\tNo scan has run yet."; fi
+    local n; n="$(find "$QUAR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+    echo -e "ok\tQuarantine: $n item(s)."
+    # The computer's other protections, where this system has them.
+    if systemctl is-active --quiet firewalld || { command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; }; then
+        echo -e "ok\tFirewall is on."
+    else echo -e "warn\tFirewall is off."; fi
+    if [[ -e /run/ostree-booted ]]; then
+        if rpm-ostree status --booted --json 2>/dev/null | grep -q 'ostree-image-signed'; then echo -e "ok\tSystem updates are signature-checked."
+        else echo -e "warn\tSystem updates aren't signature-checked yet (restart after the next update)."; fi
+        echo -e "ok\tSystem files are read-only."
+    fi
+    if mokutil --sb-state 2>/dev/null | grep -qi enabled; then echo -e "ok\tSecure Boot is on."; else echo -e "ok\tSecure Boot is off (optional)."; fi
+}
+
+dashboard() {
+    while true; do
+        local lines warn=no text
+        lines="$(status_lines)"
+        grep -q '^warn' <<< "$lines" && warn=yes
+        if [[ $warn == yes ]]; then text="<h2>Needs attention</h2>"; else text="<h2>You are protected</h2>"; fi
+        while IFS=$'\t' read -r kind msg; do
+            if [[ $kind == ok ]]; then text+="&#10003; $msg<br>"; else text+="<b>&#9888; $msg</b><br>"; fi
+        done <<< "$lines"
+        local items=(scan "Scan now (your home folder)" pick "Scan a file or folder" quarantine "Quarantine" history "History")
+        [[ $warn == yes ]] && items=(fix "Fix now" "${items[@]}")
+        if [[ -f "$CONF/downloads-off" ]]; then items+=(toggle "Turn download scanning on")
+        else items+=(toggle "Turn download scanning off"); fi
+        choice="$(kdialog --title "$APP" --icon "$ICON" --geometry 560x520 --menu "$text" "${items[@]}")" || exit 0
+        case "$choice" in
+            fix)
+                pkexec systemctl restart clamav-freshclam.service 2>/dev/null || true
+                rm -f "$CONF/downloads-off"
+                systemctl --user restart steel-shield-downloads.service 2>/dev/null || true
+                ;;
+            scan) scan_with_report "$HOME" ;;
+            pick)
+                target="$(kdialog --title "$APP" --getexistingdirectory "$HOME")" || continue
+                scan_with_report "$target" ;;
+            quarantine) quarantine_view ;;
+            history) kdialog --title "$APP" --icon "$ICON" --textbox "$LOG" 640 420 ;;
+            toggle)
+                if [[ -f "$CONF/downloads-off" ]]; then
+                    rm -f "$CONF/downloads-off"; systemctl --user enable --now steel-shield-downloads.service
+                else
+                    touch "$CONF/downloads-off"; systemctl --user disable --now steel-shield-downloads.service
+                fi ;;
+        esac
+    done
+}
+
+scan_with_report() {
+    local found
+    kdialog --title "$APP" --icon "$ICON" --passivepopup "Scanning $1 ... this can take a while." 5
+    run_clamscan -r --exclude-dir='/\.local/share/steel-shield$' --exclude-dir='/\.local/share/Steam$' "$@" | handle_detections
+    record_scan "$*"
+    found="$(cat "$STATE/last-found" 2>/dev/null || echo 0)"
+    if [[ "$found" == 0 ]]; then
+        kdialog --title "$APP" --icon "$ICON" --msgbox "<h3>No threats found</h3><p>Scanned: $*</p>"
+    else
+        kdialog --title "$APP" --icon "$ICON" --msgbox "<h3>$found threat(s) moved to quarantine</h3><p>Open Quarantine in Steel Shield to see what they are, or to restore one.</p>"
+    fi
+}
+
+quarantine_view() {
+    local items=() id
+    for d in "$QUAR"/*/; do
+        [[ -f "$d/info" ]] || continue
+        id="$(basename "$d")"
+        items+=("$id" "$(basename -- "$(info_get "$id" path)") ($(info_get "$id" date))")
+    done
+    if [[ ${#items[@]} -eq 0 ]]; then
+        kdialog --title "$APP" --icon "$ICON" --msgbox "Quarantine is empty."
+        return
+    fi
+    id="$(kdialog --title "Quarantine" --icon "$ICON" --menu "Pick an item to see what it is, restore it or delete it." "${items[@]}")" || return
+    action="$(kdialog --title "Quarantine" --icon "$ICON" --menu "$(explain "$(info_get "$id" signature)")" \
+        details "Details" restore "Restore it" allow "Restore it and always allow this file" delete "Delete it for good")" || return
+    case "$action" in
+        details) details "$id" ;;
+        restore) restore "$id" ;;
+        allow) restore "$id" allow ;;
+        delete)
+            kdialog --title "Quarantine" --warningyesno "Delete $(basename -- "$(info_get "$id" path)") for good? This can't be undone." \
+                && delete_item "$id" ;;
+    esac
+}
+
+case "${1:-dashboard}" in
+    dashboard) dashboard ;;
+    scan) shift; scan_with_report "$@" ;;
+    watch-downloads) watch_downloads ;;
+    usb-check) usb_check ;;
+    scan-usb) scan_usb "$2" ;;
+    weekly) weekly ;;
+    restore) restore "$2" ;;
+    allow) restore "$2" allow ;;
+    delete) delete_item "$2" ;;
+    details) details "$2" ;;
+    status) status_lines ;;
+    explain) explain "$2" ;;
+    selftest-scan) # used by the image build: scan, quarantine, restore without a desktop
+        shift
+        run_clamscan "$@" | while IFS=$'\t' read -r p s; do quarantine "$p" "$s"; done ;;
+    *) echo "usage: steel-shield [dashboard|scan PATH...|restore ID|delete ID|status]" >&2; exit 2 ;;
+esac

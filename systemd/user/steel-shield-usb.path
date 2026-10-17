@@ -1,0 +1,10 @@
+# Steel Shield: notice when a USB drive is plugged in.
+[Unit]
+Description=Steel Shield: watch for new USB drives
+
+[Path]
+PathChanged=/run/media/%u
+MakeDirectory=no
+
+[Install]
+WantedBy=graphical-session.target

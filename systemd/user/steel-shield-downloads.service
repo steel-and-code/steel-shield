@@ -1,0 +1,15 @@
+# Steel Shield: scan new files in Downloads as they arrive.
+[Unit]
+Description=Steel Shield: scan new downloads
+After=graphical-session.target
+PartOf=graphical-session.target
+ConditionPathExists=!%h/.config/steel-shield/downloads-off
+
+[Service]
+ExecStart=/usr/bin/steel-shield watch-downloads
+Restart=on-failure
+RestartSec=30
+Nice=19
+
+[Install]
+WantedBy=graphical-session.target

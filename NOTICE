@@ -1,0 +1,17 @@
+Steel Shield
+Copyright 2026 Steel & Code and Blackbox Entertainment
+
+Steel Shield is open-source virus protection for Linux, made by Steel & Code
+(steelandcode.com) and Blackbox Entertainment. The code in this repository is
+licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The Steel Shield name and icon are trademarks and artwork of Steel & Code and
+Blackbox Entertainment, held jointly. The Apache License does not grant
+permission to use them (section 6).
+
+Steel Shield uses ClamAV (https://www.clamav.net), licensed under the GNU
+General Public License, version 2, and its virus definitions from Cisco Talos.
+Steel Shield runs ClamAV's programs; it does not include ClamAV's code.
+
+Steel Shield was first built for Steel OS (https://steel-os.org), where it is
+included in every copy.

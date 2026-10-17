@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Steel Shield
+GenericName=Virus protection
+Comment=See your protection, scan files and folders, manage quarantine
+Exec=/usr/bin/steel-shield
+Icon=steel-shield
+Terminal=false
+Type=Application
+Categories=System;Security;Settings;
+Keywords=virus;antivirus;malware;scan;security;shield;protection;quarantine;

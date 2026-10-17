@@ -1,0 +1,78 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  # Every Monday, even with no changes, so a new Fedora, Ubuntu or ClamAV
+  # release that breaks Steel Shield is noticed within a week.
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  fedora:
+    runs-on: ubuntu-24.04
+    container: registry.fedoraproject.org/fedora:44
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ClamAV and tools
+        run: dnf install -y clamav inotify-tools libnotify make findutils which
+      - name: Syntax check
+        run: bash -n bin/steel-shield && bash -n tests/selftest.sh
+      - name: Detection and quarantine test
+        run: make test
+      - name: Install to a staging folder
+        run: make install DESTDIR="$PWD/stage" && find stage -type f | sort
+
+  debian:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ClamAV and tools
+        run: sudo apt-get update && sudo apt-get install -y clamav inotify-tools libnotify-bin
+      - name: Detection and quarantine test
+        run: make test
+
+  real-definitions:
+    # Weekly only: downloads the real ClamAV definitions once and checks that
+    # the EICAR test file is caught with them.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ClamAV and fetch definitions
+        run: |
+          sudo apt-get update && sudo apt-get install -y clamav clamav-freshclam inotify-tools libnotify-bin
+          sudo systemctl stop clamav-freshclam || true
+          sudo freshclam
+      - name: Detect the EICAR test file with the real definitions
+        run: |
+          d="$(mktemp -d)"; mkdir -p "$d/Downloads"
+          printf '%s' 'X5O!P%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > "$d/Downloads/eicar.com"
+          HOME="$d" XDG_DATA_HOME="$d/.local/share" XDG_STATE_HOME="$d/.local/state" XDG_CONFIG_HOME="$d/.config" \
+            bin/steel-shield selftest-scan "$d/Downloads/eicar.com"
+          ls "$d"/.local/share/steel-shield/quarantine/*/file
+          echo "Real definitions: EICAR detected and quarantined"
+
+  report-failure:
+    # A failed weekly run opens an issue so it can't be missed.
+    needs: [fedora, debian, real-definitions]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Open an issue
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue create --repo "${{ github.repository }}" \
+            --title "Weekly check failed ($(date +%Y-%m-%d))" \
+            --label weekly-check-failed \
+            --body "The weekly Steel Shield test failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          || gh issue create --repo "${{ github.repository }}" \
+            --title "Weekly check failed ($(date +%Y-%m-%d))" \
+            --body "The weekly Steel Shield test failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

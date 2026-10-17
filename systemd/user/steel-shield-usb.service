@@ -1,0 +1,7 @@
+# Steel Shield: offer to scan a newly plugged-in drive.
+[Unit]
+Description=Steel Shield: offer to scan new USB drives
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/steel-shield usb-check
