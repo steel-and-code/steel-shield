@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<!-- Steel Shield: the password prompt says what it is for. Installed to /usr/share/polkit-1/actions/ by make install. -->
+<policyconfig>
+  <vendor>Steel Shield</vendor>
+  <vendor_url>https://github.com/steel-and-code/steel-shield</vendor_url>
+  <action id="org.steel-os.shield.system">
+    <description>Steel Shield: update virus definitions, scan the whole computer, manage quarantine</description>
+    <message>Type your password to let Steel Shield update its virus definitions or scan the whole computer.</message>
+    <icon_name>steel-shield</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/steel-shield-system</annotate>
+  </action>
+</policyconfig>

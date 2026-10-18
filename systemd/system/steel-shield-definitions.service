@@ -1,0 +1,14 @@
+[Unit]
+Description=Steel Shield: put the built-in virus definitions in place
+Documentation=https://github.com/steel-and-code/steel-shield
+# Before the hourly updater, so it starts from the built-in definitions
+# instead of downloading everything, and scans work even offline.
+Before=clamav-freshclam.service
+ConditionPathIsDirectory=/usr/share/steel-shield/definitions
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/steel-shield-system seed
+
+[Install]
+WantedBy=multi-user.target

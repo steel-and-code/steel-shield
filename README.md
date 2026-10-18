@@ -15,6 +15,12 @@ systems.
   programs, installers and Office files with macros first.
 - **Weekly:** the home folder is scanned on Tuesday afternoon at the lowest
   priority, and waits while a game is running.
+- **Quick scan and Full scan:** Quick scan checks your own files. Full scan
+  checks the whole computer (every user's files, /etc, /var, /opt, /srv,
+  /usr/local, /tmp and plugged-in drives) in the background, after asking for
+  the password. /usr and signed app images are left out: on image-based
+  systems they are read-only and verified, and leaving them out keeps a full
+  scan to minutes instead of hours.
 - **Quarantine, never silent deletion:** anything detected is moved to a
   quarantine folder. **Restore** puts it back, and **Always allow** stops it
   being flagged again.
@@ -23,11 +29,18 @@ systems.
   under Details.
 - **Honest status:** the dashboard says plainly when definitions are old or a
   part has stopped, and never shows a green tick for something that failed.
+  A scan that couldn't load definitions says so instead of "no threats found".
+  **Fix now** downloads the newest definitions at once and shows the result,
+  or the updater's own error.
 - **Light:** the scanner runs only while scanning, then exits. Every scan runs
   at the lowest CPU and disk priority.
 
 Virus definitions come from ClamAV (Cisco Talos) and update every hour through
-ClamAV's own `freshclam` service.
+ClamAV's own `freshclam` service, which Steel Shield restarts every 10 minutes
+if it stops. A distribution can ship definitions with the system in
+`/usr/share/steel-shield/definitions` (Steel OS does): the
+`steel-shield-definitions` service puts them in place at boot when nothing
+newer has downloaded, so a new install is protected before it is ever online.
 
 ## Behaviour watching
 
@@ -67,7 +80,7 @@ Enable with `systemctl --global enable steel-shield-guard.service` and
 ```
 sudo make install
 systemctl --global enable steel-shield-downloads.service steel-shield-usb.path steel-shield-weekly.timer
-sudo systemctl enable --now clamav-freshclam.service
+sudo systemctl enable --now steel-shield-definitions.service clamav-freshclam.service
 ```
 
 Log out and back in. Open **Steel Shield** from the application menu.
