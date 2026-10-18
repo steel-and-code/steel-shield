@@ -1,0 +1,951 @@
+#!/usr/bin/python3
+"""Steel Shield: the app window.
+
+A Norton/McAfee-style window over the steel-shield command, which keeps all
+the protection logic: Status (logo, headline, one card per protection),
+Scan (with real progress), Quarantine and History. Opened by `steel-shield`
+when PySide6 is installed; otherwise steel-shield shows its kdialog menus.
+
+Everything it changes goes through `steel-shield` subcommands and the
+`steel-shield-system` helper (via pkexec), so the app and the command line
+always agree.
+"""
+import html
+import os
+import re
+import shutil
+import subprocess
+import sys
+import threading
+from pathlib import Path
+
+from PySide6.QtCore import QByteArray, QObject, QProcess, Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QIcon, QPainter, QPixmap
+from PySide6.QtSvgWidgets import QSvgWidget
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame, QGridLayout,
+                               QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
+                               QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+                               QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
+
+# ---- Where things are ------------------------------------------------------
+SHIELD = shutil.which("steel-shield") or "/usr/bin/steel-shield"
+_here = Path(os.path.realpath(__file__)).parent
+HELPER = next((str(p) for p in (_here / "steel-shield-system",
+                                Path(SHIELD).resolve().parent.parent / "libexec" / "steel-shield-system",
+                                Path("/usr/libexec/steel-shield-system")) if p.exists()),
+              "/usr/libexec/steel-shield-system")
+QUAR_HELPER = str(Path(HELPER).with_name("steel-shield-quarantine"))
+HOME = Path.home()
+DATA = Path(os.environ.get("XDG_DATA_HOME", HOME / ".local/share")) / "steel-shield"
+QUAR = DATA / "quarantine"
+STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "steel-shield"
+LOG = STATE / "history.log"
+SYSQ_INDEX = Path("/var/lib/steel-shield/quarantine.tsv")
+DEMO = not Path(SHIELD).exists()   # no steel-shield here: show sample data (for screenshots)
+
+BLUE, ORANGE = "#4A90D9", "#F2641E"
+
+QSS = """
+QMainWindow, QWidget#root { background: #0E1114; }
+QWidget { color: #E9EEF2; font-size: 14px; }
+QWidget#rail { background: #0C0F12; border-right: 1px solid #262E37; }
+QPushButton[rail="true"] { text-align: left; padding: 10px 14px; border: 0; border-radius: 8px;
+    background: transparent; color: #8E9AA6; font-weight: 600; }
+QPushButton[rail="true"]:hover { background: #151A1F; color: #E9EEF2; }
+QPushButton[rail="true"]:checked { background: #1B2128; color: #FFFFFF; border-left: 3px solid #4A90D9; }
+QLabel#railfoot { color: #8E9AA6; font-size: 12px; border-top: 1px solid #262E37; padding-top: 10px; }
+QFrame#hero { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1B2128, stop:1 #151A1F);
+    border: 1px solid #262E37; border-radius: 12px; }
+QFrame#hero[state="warn"] { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2a1a12, stop:1 #151A1F);
+    border: 1px solid #F2641E; }
+QLabel#kicker { color: #4A90D9; font-size: 12px; font-weight: 700; letter-spacing: 2px; }
+QLabel#kicker[state="warn"] { color: #F2641E; }
+QLabel#title { font-size: 30px; font-weight: 700; }
+QLabel[class="muted"], QLabel#text, QLabel#sub { color: #8E9AA6; }
+QLabel#h2 { font-size: 19px; font-weight: 700; }
+QPushButton { background: #1B2128; border: 1px solid #262E37; border-radius: 8px; padding: 8px 16px; font-weight: 600; }
+QPushButton:hover { border-color: #8E9AA6; }
+QPushButton[kind="primary"] { background: #4A90D9; border-color: #4A90D9; color: #FFFFFF; }
+QPushButton[kind="warn"] { background: #F2641E; border-color: #F2641E; color: #111111; }
+QPushButton[size="small"] { padding: 4px 12px; font-size: 13px; }
+QFrame[class="card"] { background: #151A1F; border: 1px solid #262E37; border-radius: 10px; }
+QFrame[class="card"][tone="warn"] { border: 1px solid #7a3a1a; }
+QFrame#scantype { background: #151A1F; border: 1px solid #262E37; border-radius: 10px; }
+QFrame#scantype:hover { border-color: #4A90D9; }
+QLabel[class="pill"] { border-radius: 9px; padding: 2px 9px; font-size: 11px; font-weight: 700;
+    background: rgba(74,144,217,34); color: #9CC6F2; }
+QLabel[class="pill"][tone="warn"] { background: rgba(242,100,30,36); color: #FF9A66; }
+QLabel[class="pill"][tone="off"] { background: rgba(255,255,255,16); color: #8E9AA6; }
+QLabel[class="ico"] { border-radius: 8px; background: rgba(74,144,217,34); color: #4A90D9; font-size: 18px; }
+QLabel[class="ico"][tone="warn"] { background: rgba(242,100,30,36); color: #F2641E; }
+QLabel[class="ico"][tone="off"] { background: rgba(255,255,255,13); color: #8E9AA6; }
+QProgressBar { background: #0A0D10; border: 1px solid #262E37; border-radius: 4px; height: 8px; }
+QProgressBar::chunk { border-radius: 4px; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #4A90D9, stop:1 #7DB6EE); }
+QLabel#scanline { color: #8E9AA6; font-family: monospace; font-size: 12px; }
+QTableWidget { background: #0E1114; border: 1px solid #262E37; border-radius: 10px; gridline-color: #262E37; }
+QHeaderView::section { background: #151A1F; color: #8E9AA6; border: 0; border-bottom: 1px solid #262E37;
+    padding: 8px; font-size: 12px; font-weight: 600; }
+QLabel#empty { color: #8E9AA6; border: 1px dashed #262E37; border-radius: 10px; padding: 28px; }
+QScrollArea, QWidget#page { border: 0; background: #0E1114; }
+QLabel#brand { font-size: 18px; font-weight: 800; letter-spacing: 1px; }
+QFrame[class="ico"] { border-radius: 8px; background: rgba(74,144,217,34); }
+QFrame[class="ico"][tone="warn"] { background: rgba(242,100,30,36); }
+QFrame[class="ico"][tone="off"] { background: rgba(255,255,255,13); }
+"""
+
+LOGO_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+{rings}
+<rect x="66" y="66" width="380" height="380" rx="84" fill="#000"/>
+<path d="M256 108L374 150V240C374 318 324 372 256 398C188 372 138 318 138 240V150Z" fill="none"
+  stroke="{rim}" stroke-width="26" stroke-linejoin="round"/>
+<path transform="translate(212 196) scale(3.1)" d="M28 3.5H9.5L3.5 9.5V14.5L9 20H19L24.5 25.5V30.5L18.5 36.5H0"
+  fill="none" stroke="#F2641E" stroke-width="8"/>
+{badge}
+</svg>"""
+RINGS = ('<circle cx="256" cy="256" r="246" fill="none" stroke="#262E37" stroke-width="8"/>'
+         '<circle cx="256" cy="256" r="246" fill="none" stroke="{ring}" stroke-width="8" stroke-linecap="round" '
+         'stroke-dasharray="1546" stroke-dashoffset="{offset}" transform="rotate(-90 256 256)"/>')
+BADGE_OK = ('<circle cx="404" cy="404" r="52" fill="#4A90D9" stroke="#0E1114" stroke-width="10"/>'
+            '<path d="M380 404L398 422L430 388" fill="none" stroke="#fff" stroke-width="13" '
+            'stroke-linecap="round" stroke-linejoin="round"/>')
+BADGE_WARN = ('<circle cx="404" cy="404" r="52" fill="#F2641E" stroke="#0E1114" stroke-width="10"/>'
+              '<path d="M404 378V412" stroke="#111" stroke-width="13" stroke-linecap="round"/>'
+              '<circle cx="404" cy="432" r="8" fill="#111"/>')
+
+ICONS = {
+    "defs": '<path d="M12 3v12M7 10l5 5 5-5M4 21h16"/>',
+    "updater": '<path d="M21 12a9 9 0 11-3-6.7L21 8"/><path d="M21 3v5h-5"/>',
+    "downloads": '<path d="M4 4h16v16H4z"/><path d="M12 8v8M8 12l4 4 4-4"/>',
+    "guard": '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    "firewall": '<path d="M3 6h18v12H3z"/><path d="M3 12h18M9 6v6M15 12v6"/>',
+    "signed": '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/>',
+    "sandbox": '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6v6H9z"/>',
+    "secureboot": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
+    "web": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>',
+    "status": '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
+    "scan": '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
+    "quarantine": '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
+    "history": '<path d="M3 12a9 9 0 109-9 9 9 0 00-7 3.4"/><path d="M3 4v4h4M12 7v5l3 2"/>',
+}
+
+
+def icon_svg(key, color):
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="' + color +
+            '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + ICONS[key] + "</svg>").encode()
+
+
+# One card per protection: title and the pill words for ok / warn.
+CARDS = [
+    ("defs", "Virus definitions", "Up to date", "Needs fixing"),
+    ("updater", "Definitions updater", "Running", "Stopped"),
+    ("downloads", "Download scanning", "On", "Off"),
+    ("guard", "Behaviour watching", "On", "Off"),
+    ("firewall", "Firewall", "On", "Off"),
+    ("signed", "System updates", "Signature-checked", "Not yet"),
+    ("sandbox", "App sandbox", "On", "Off"),
+    ("secureboot", "Secure Boot", "On", "Off"),
+    ("web", "Dangerous-website blocking", "On", "Off"),
+]
+
+
+def run(*args, timeout=60):
+    """Run a command, return (exit code, output)."""
+    try:
+        p = subprocess.run(list(args), capture_output=True, text=True, timeout=timeout)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+    except Exception as e:  # noqa: BLE001 - shown to the user as text
+        return 1, str(e)
+
+
+def shield(*args, timeout=60):
+    return run(SHIELD, *args, timeout=timeout)
+
+
+def status_lines():
+    """[(kind, text, key)] from `steel-shield status`."""
+    if DEMO:
+        return [("warn", "There are no virus definitions yet. Click Fix now.", "defs"),
+                ("warn", "The definitions updater isn't running.", "updater"),
+                ("ok", "New downloads are scanned automatically.", "downloads"),
+                ("ok", "No scan has run yet.", "lastscan"),
+                ("ok", "Quarantine: 0 item(s).", "quarantine"),
+                ("ok", "Firewall is on.", "firewall"),
+                ("ok", "System updates are signature-checked.", "signed"),
+                ("ok", "Secure Boot is off (optional).", "secureboot"),
+                ("ok", "Apps run in their own sandbox, and system files are read-only.", "sandbox"),
+                ("ok", "Behaviour watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.", "guard"),
+                ("ok", "Dangerous-website blocking is off (optional).", "web")]
+    out = []
+    for line in shield("status", timeout=30)[1].splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[0] in ("ok", "warn"):
+            out.append((parts[0], parts[1], parts[2] if len(parts) > 2 else ""))
+    return out
+
+
+def explain(sig):
+    if DEMO:
+        return "a Linux program that pretends to be something useful but harms the computer."
+    return shield("explain", sig, timeout=10)[1].strip()
+
+
+def quarantine_items():
+    """[(id, path, signature, date, system?)] newest first."""
+    items = []
+    for d in QUAR.glob("*/"):
+        info = d / "info"
+        if not info.is_file():
+            continue
+        f = dict(line.split("=", 1) for line in info.read_text(errors="replace").splitlines() if "=" in line)
+        items.append((d.name, f.get("path", ""), f.get("signature", ""), f.get("date", ""), False))
+    if SYSQ_INDEX.is_file():
+        for line in SYSQ_INDEX.read_text(errors="replace").splitlines():
+            p = line.split("\t")
+            if len(p) >= 4:
+                items.append((p[0], p[1], p[2], p[3], True))
+    return sorted(items, key=lambda i: i[0], reverse=True)
+
+
+def history_rows():
+    """[(when, what, result, tone)] newest first, from history.log."""
+    rows = []
+    if not LOG.is_file():
+        return rows
+    for line in LOG.read_text(errors="replace").splitlines()[-400:]:
+        m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}) (.*)", line)
+        if not m:
+            continue
+        when, what = m.groups()
+        up = what.upper()
+        if up.startswith("QUARANTINED"):
+            res, tone = "Threat blocked", "warn"
+        elif up.startswith(("RESTORED", "ALLOWED")):
+            res, tone = "Restored", "warn"
+        elif up.startswith("DELETED"):
+            res, tone = "Removed", "ok"
+        elif up.startswith("COULD NOT"):
+            res, tone = "Problem", "warn"
+        elif "FOUND 0" in up or "CLEAN" in up:
+            res, tone = "Clean", "ok"
+        else:
+            res, tone = "OK", "ok"
+        what = re.sub(r"^(QUARANTINED|RESTORED|DELETED|ALLOWED|COULD NOT MOVE|WEEKLY|SCAN)\b", lambda x: x.group(1).capitalize(), what)
+        rows.append((when, what, res, tone))
+    return list(reversed(rows))
+
+
+def label(text="", obj=None, cls=None, wrap=False):
+    w = QLabel(text)
+    if obj:
+        w.setObjectName(obj)
+    if cls:
+        w.setProperty("class", cls)
+    w.setWordWrap(wrap)
+    w.setTextFormat(Qt.TextFormat.PlainText if "<" not in text else Qt.TextFormat.RichText)
+    return w
+
+
+def button(text, kind=None, small=False, slot=None):
+    b = QPushButton(text)
+    b.setCursor(Qt.CursorShape.PointingHandCursor)
+    if kind:
+        b.setProperty("kind", kind)
+    if small:
+        b.setProperty("size", "small")
+    if slot:
+        b.clicked.connect(slot)
+    return b
+
+
+def restyle(w):
+    w.style().unpolish(w)
+    w.style().polish(w)
+
+
+# ---- Scanning in the background ---------------------------------------------
+class ScanJob(QObject):
+    """Counts the files, then runs clamscan on them, reporting each file."""
+    progress = Signal(int, int, str, int)   # done, total, current file, threats
+    finished = Signal(list, str)            # [(path, signature)], error text
+
+    EXCLUDE_DIRS = {".local/share/steel-shield", ".local/share/Steam"}
+
+    def __init__(self, paths):
+        super().__init__()
+        self.paths = [str(p) for p in paths]
+        self.proc = None
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+        if self.proc and self.proc.poll() is None:
+            self.proc.terminate()
+
+    def _excluded(self, d):
+        rel = os.path.relpath(d, HOME) if d.startswith(str(HOME)) else d
+        return rel in self.EXCLUDE_DIRS
+
+    def run(self):
+        threading.Thread(target=self._work, daemon=True).start()
+
+    def _work(self):
+        total = 0
+        for p in self.paths:
+            if os.path.isfile(p):
+                total += 1
+                continue
+            for root, dirs, files in os.walk(p):
+                dirs[:] = [d for d in dirs if not self._excluded(os.path.join(root, d))]
+                total += len(files)
+                if self.stopped:
+                    return
+        if DEMO:
+            import time
+            for i in range(0, total + 1, max(1, total // 60)):
+                if self.stopped:
+                    return
+                self.progress.emit(i, total, f"{HOME}/Downloads/file-{i}.zip", 0)
+                time.sleep(0.03)
+            self.finished.emit([], "")
+            return
+        code, ddir = shield("defs-dir", timeout=10)
+        ddir = ddir.strip()
+        if code != 0 or not ddir:
+            self.finished.emit([], "There are no virus definitions yet, so nothing could be checked. Click Fix now.")
+            return
+        cmd = ["nice", "-n", "19", "ionice", "-c", "3", "clamscan", "-r", "--no-summary", "--stdout", "-d", ddir,
+               r"--exclude-dir=/\.local/share/steel-shield$", r"--exclude-dir=/\.local/share/Steam$", *self.paths]
+        found, done, errors = [], 0, []
+        try:
+            self.proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
+        except OSError as e:
+            self.finished.emit([], f"The scanner couldn't start: {e}")
+            return
+        for line in self.proc.stdout:
+            line = line.rstrip("\n")
+            m = re.match(r"(.*): (.+) FOUND$", line)
+            if m:
+                found.append((m.group(1), m.group(2)))
+            if ": " in line:
+                done += 1
+                if done % 25 == 0 or m:
+                    self.progress.emit(done, max(total, done), line.rsplit(": ", 1)[0], len(found))
+        self.proc.wait()
+        err = self.proc.stderr.read()
+        if self.stopped:
+            self.finished.emit(found, "stopped")
+        elif self.proc.returncode >= 2 and re.search(r"database|can.t open", err, re.I) and not done:
+            self.finished.emit(found, "The virus definitions couldn't be loaded:\n" + err.strip()[:400])
+        else:
+            self.progress.emit(max(total, done), max(total, done), "", len(found))
+            self.finished.emit(found, "")
+
+
+# ---- The window -------------------------------------------------------------
+class Window(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Steel Shield")
+        self.setWindowIcon(QIcon.fromTheme("steel-shield"))
+        self.resize(1100, 760)
+        self.job = None
+        self.busy = None          # what is running: "scan", "full", "fix"
+        self.last_result = None   # (kind, text) shown in the hero after a scan
+
+        root = QWidget(objectName="root")
+        lay = QHBoxLayout(root)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        self.setCentralWidget(root)
+
+        rail = QWidget(objectName="rail")
+        rail.setFixedWidth(210)
+        rl = QVBoxLayout(rail)
+        rl.setContentsMargins(10, 16, 10, 12)
+        rl.setSpacing(4)
+        brand = QHBoxLayout()
+        brand.setContentsMargins(6, 0, 0, 14)
+        mark = QSvgWidget()
+        mark.setFixedSize(28, 28)
+        mark.load(QByteArray(LOGO_SVG.format(rings="", rim=BLUE, badge="").encode()))
+        brand.addWidget(mark)
+        brand.addWidget(label("Steel Shield", "brand"))
+        brand.addStretch(1)
+        rl.addLayout(brand)
+        self.tabs = []
+        for i, (name, key) in enumerate([("Status", "status"), ("Scan", "scan"), ("Quarantine", "quarantine"),
+                                         ("History", "history")]):
+            b = QPushButton("  " + name, checkable=True)
+            pm = QPixmap(36, 36)
+            pm.fill(Qt.GlobalColor.transparent)
+            from PySide6.QtSvg import QSvgRenderer
+            QSvgRenderer(QByteArray(icon_svg(key, "#8E9AA6"))).render(QPainter(pm))
+            b.setIcon(QIcon(pm))
+            b.setProperty("rail", True)
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.clicked.connect(lambda _=False, n=i: self.show_view(n))
+            rl.addWidget(b)
+            self.tabs.append(b)
+        rl.addStretch(1)
+        self.railfoot = label("", "railfoot", wrap=True)
+        rl.addWidget(self.railfoot)
+        lay.addWidget(rail)
+
+        self.stack = QStackedWidget()
+        lay.addWidget(self.stack, 1)
+        self.stack.addWidget(self.build_status())
+        self.stack.addWidget(self.build_scan())
+        self.stack.addWidget(self.build_quarantine())
+        self.stack.addWidget(self.build_history())
+
+        self.show_view(0)
+        self.refresh()
+        self.timer = QTimer(self, interval=30000, timeout=self.refresh_if_idle)
+        self.timer.start()
+
+    # -- helpers --
+    def page(self, title, sub):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget(objectName="page")
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(18)
+        if title:
+            head = QVBoxLayout()
+            head.setSpacing(2)
+            head.addWidget(label(title, "h2"))
+            head.addWidget(label(sub, "sub", wrap=True))
+            v.addLayout(head)
+        scroll.setWidget(inner)
+        return scroll, v
+
+    def show_view(self, n):
+        for i, b in enumerate(self.tabs):
+            b.setChecked(i == n)
+        self.stack.setCurrentIndex(n)
+        if n == 2:
+            self.fill_quarantine()
+        if n == 3:
+            self.fill_history()
+
+    # -- Status --
+    def build_status(self):
+        page, v = self.page("", "")
+        self.hero = QFrame(objectName="hero")
+        h = QHBoxLayout(self.hero)
+        h.setContentsMargins(24, 24, 24, 24)
+        h.setSpacing(28)
+        self.logo = QSvgWidget()
+        self.logo.setFixedSize(190, 190)
+        h.addWidget(self.logo, 0, Qt.AlignmentFlag.AlignTop)
+        col = QVBoxLayout()
+        col.setSpacing(6)
+        self.kicker = label("", "kicker")
+        self.title = label("", "title", wrap=True)
+        self.text = label("", "text", wrap=True)
+        self.issues = label("", wrap=True)
+        self.issues.setTextFormat(Qt.TextFormat.RichText)
+        col.addWidget(self.kicker)
+        col.addWidget(self.title)
+        col.addWidget(self.text)
+        col.addWidget(self.issues)
+        self.actions = QHBoxLayout()
+        self.actions.setSpacing(10)
+        col.addLayout(self.actions)
+        self.bar = QProgressBar(textVisible=False)
+        self.bar.setFixedHeight(10)
+        self.scanline = label("", "scanline")
+        self.scanline.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.scanstats = label("", "text")
+        for w in (self.bar, self.scanline, self.scanstats):
+            w.hide()
+            col.addWidget(w)
+        col.addStretch(1)
+        h.addLayout(col, 1)
+        v.addWidget(self.hero)
+
+        head = QHBoxLayout()
+        head.addWidget(label("Your protection", "h2"))
+        head.addStretch(1)
+        sub = label("Built into Steel OS. Nothing to install." if Path("/usr/share/steel-os").exists() or DEMO
+                    else "Steel Shield's checks and the computer's own protections.", "sub")
+        head.addWidget(sub)
+        v.addLayout(head)
+        self.cards = QGridLayout()
+        self.cards.setSpacing(12)
+        v.addLayout(self.cards)
+        v.addStretch(1)
+        return page
+
+    def set_logo(self, state, pct=None):
+        """ok: the blue shield alone. warn: orange, ring and a warning badge.
+        busy: blue, the ring fills with the progress (or stays full)."""
+        warn = state == "warn"
+        rim = ORANGE if warn else BLUE
+        rings = ""
+        if state != "ok":
+            offset = 0 if pct is None else 1546 * (1 - pct / 100)
+            rings = RINGS.format(ring=ORANGE if warn else BLUE, offset=f"{offset:.0f}")
+        svg = LOGO_SVG.format(rings=rings, rim=rim, badge=BADGE_WARN if warn else "")
+        self.logo.load(QByteArray(svg.encode()))
+
+    def set_hero(self, state, kicker, title, text, issues=(), actions=()):
+        self.hero.setProperty("state", "warn" if state == "warn" else "")
+        self.kicker.setProperty("state", "warn" if state == "warn" else "")
+        restyle(self.hero)
+        restyle(self.kicker)
+        self.kicker.setText(kicker.upper())
+        self.title.setText(title)
+        self.text.setText(text)
+        self.issues.setText("".join(f'<div style="margin:3px 0"><span style="color:{ORANGE}">■</span>&nbsp; '
+                                    f"{html.escape(i)}</div>" for i in issues))
+        self.issues.setVisible(bool(issues))
+        while self.actions.count():
+            w = self.actions.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        for b in actions:
+            self.actions.addWidget(b)
+        self.actions.addStretch(1)
+        if state != "busy":
+            self.set_logo(state)
+            for w in (self.bar, self.scanline, self.scanstats):
+                w.hide()
+
+    def refresh_if_idle(self):
+        if not self.busy:
+            self.refresh()
+
+    def refresh(self):
+        lines = status_lines()
+        by_key = {k: (kind, text) for kind, text, k in lines if k}
+        problems = [text for kind, text, _ in lines if kind == "warn"]
+        defs = by_key.get("defs", ("warn", ""))
+        self.railfoot.setText("Virus definitions: " + ("up to date" if defs[0] == "ok" and "built-in" not in defs[1]
+                                                       else "built in" if "built-in" in defs[1] else "need fixing"))
+        if not self.busy:
+            if self.last_result:
+                kind, title, text = self.last_result
+                acts = [button("Open quarantine", None, slot=lambda: self.show_view(2))] if kind == "warn" else []
+                acts.append(button("Quick scan", "primary" if kind != "warn" else None, slot=self.quick_scan))
+                self.set_hero(kind, "Scan finished", title, text, (), acts)
+            elif problems:
+                n = len(problems)
+                self.set_hero("warn", f"{n} thing{'s' if n > 1 else ''} need{'' if n > 1 else 's'} fixing",
+                              "Needs attention", "Steel Shield is partly working. Fix these to get full protection:",
+                              problems, [button("Fix now", "warn", slot=self.fix_now),
+                                         button("Quick scan", slot=self.quick_scan)])
+            else:
+                last = by_key.get("lastscan", ("ok", ""))[1]
+                self.set_hero("ok", "All checks passed", "You're protected",
+                              (last + " " if last and "No scan" not in last else
+                               "Everything is on and up to date. No scan has run yet, so run your first one now. ")
+                              + "New downloads are checked automatically.", (),
+                              [button("Quick scan", "primary", slot=self.quick_scan),
+                               button("Full scan", slot=self.full_scan)])
+        self.fill_cards(by_key)
+        n = len(quarantine_items())
+        self.tabs[2].setText(f"  Quarantine  ({n})" if n else "  Quarantine")
+
+    def fill_cards(self, by_key):
+        while self.cards.count():
+            w = self.cards.takeAt(0).widget()
+            if w:
+                w.deleteLater()
+        cols = 3 if self.stack.width() > 860 else 2 if self.stack.width() > 560 else 1
+        i = 0
+        for key, title, ok_word, warn_word in CARDS:
+            if key not in by_key:
+                continue
+            kind, text = by_key[key]
+            optional = "optional" in text
+            on = kind == "ok" and not re.search(r"\b(off|isn't)\b", text) or key in ("signed", "sandbox", "defs", "updater") and kind == "ok"
+            tone = "warn" if kind == "warn" else ("off" if not on else "ok")
+            pill = ok_word if tone == "ok" else (warn_word + (" · optional" if optional else ""))
+            if key == "defs" and "built-in" in text and kind == "ok":
+                pill = "Built in"
+            card = QFrame()
+            card.setProperty("class", "card")
+            card.setProperty("tone", tone)
+            g = QGridLayout(card)
+            g.setContentsMargins(14, 14, 14, 14)
+            g.setHorizontalSpacing(12)
+            g.setVerticalSpacing(4)
+            ico = QFrame()
+            ico.setProperty("class", "ico")
+            ico.setProperty("tone", tone)
+            ico.setFixedSize(34, 34)
+            il = QVBoxLayout(ico)
+            il.setContentsMargins(8, 8, 8, 8)
+            svg = QSvgWidget()
+            svg.load(QByteArray(icon_svg(key, {"warn": ORANGE, "off": "#8E9AA6"}.get(tone, BLUE))))
+            il.addWidget(svg)
+            g.addWidget(ico, 0, 0, 3, 1, Qt.AlignmentFlag.AlignTop)
+            top = QHBoxLayout()
+            t = label(title, wrap=True)
+            t.setStyleSheet("font-weight:700")
+            top.addWidget(t, 1, Qt.AlignmentFlag.AlignTop)
+            p = label(pill, cls="pill")
+            p.setProperty("tone", tone)
+            p.setSizePolicy(QSizePolicy.Policy.Maximum, QSizePolicy.Policy.Fixed)
+            top.addWidget(p, 0, Qt.AlignmentFlag.AlignTop)
+            g.addLayout(top, 0, 1)
+            g.addWidget(label(text, cls="muted", wrap=True), 1, 1)
+            act = self.card_action(key, kind, on)
+            if act:
+                row = QHBoxLayout()
+                row.addWidget(act)
+                row.addStretch(1)
+                g.addLayout(row, 2, 1)
+            g.setRowStretch(3, 1)
+            self.cards.addWidget(card, i // cols, i % cols)
+            i += 1
+
+    def card_action(self, key, kind, on):
+        if key in ("defs", "updater") and kind == "warn":
+            return button("Fix now", "warn", True, self.fix_now)
+        if key == "downloads":
+            return button("Turn off" if on else "Turn on", None, True, lambda: self.toggle("downloads", not on))
+        if key == "guard":
+            return button("Turn off" if on else "Turn on", None, True, lambda: self.toggle("guard", not on))
+        if key == "web":
+            return button("Turn off" if on else "Block for every app", None if on else "primary", True,
+                          lambda: self.toggle("web", not on))
+        return None
+
+    def toggle(self, what, on):
+        if what == "web" and on:
+            if QMessageBox.question(self, "Block dangerous websites?",
+                                    "Every app on this computer will look up websites through Quad9, a free, "
+                                    "non-profit service that refuses to connect to known malware and phishing "
+                                    "sites.\n\nQuad9 doesn't keep your IP address. Turn it off here any time.") \
+                    != QMessageBox.StandardButton.Yes:
+                return
+        if not DEMO:
+            shield("set", what, "on" if on else "off", timeout=120)
+        self.refresh()
+
+    # -- busy states --
+    def start_busy(self, kind, kicker, title, text, determinate):
+        self.busy = kind
+        self.last_result = None
+        self.set_hero("busy", kicker, title, text, (), [button("Stop", slot=self.stop)] if kind == "scan" else [])
+        self.set_logo("busy", 0 if determinate else None)
+        self.bar.setRange(0, 100 if determinate else 0)
+        self.bar.setValue(0)
+        for w in (self.bar, self.scanline, self.scanstats):
+            w.show()
+        self.scanline.setText("")
+        self.scanstats.setText("")
+        self.show_view(0)
+
+    def end_busy(self, result=None):
+        self.busy = None
+        self.last_result = result
+        self.refresh()
+
+    def stop(self):
+        if self.job:
+            self.job.stop()
+
+    # -- actions --
+    def fix_now(self):
+        if self.busy:
+            return
+        self.start_busy("fix", "Fixing", "Getting protection up to date…",
+                        "Downloading the newest virus definitions and starting the updater.", False)
+        self.scanline.setText("Downloading virus definitions…")
+        if DEMO:
+            QTimer.singleShot(1500, lambda: self.end_busy(("ok", "Virus definitions are up to date",
+                                                          "Steel Shield checks for new ones every hour from now on.")))
+            return
+        shield("set", "downloads", "on", timeout=60)
+        shield("set", "guard", "on", timeout=60)
+        self.proc = QProcess(self)
+        self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.proc.finished.connect(self.fix_done)
+        self.proc.start("pkexec", [HELPER, "update"])
+
+    def fix_done(self, code, _status):
+        out = bytes(self.proc.readAll()).decode(errors="replace")
+        if code in (126, 127):      # the password window was closed
+            self.end_busy()
+            return
+        if code == 0:
+            shield("log", "FIX NOW: virus definitions updated", timeout=10)
+            self.end_busy(("ok", "Virus definitions are up to date",
+                           "Steel Shield checks for new ones every hour from now on."))
+        else:
+            shield("log", "FIX NOW: the update failed", timeout=10)
+            self.end_busy()
+            box = QMessageBox(QMessageBox.Icon.Warning, "Steel Shield",
+                              "The virus definitions couldn't be updated.\n\nSteel Shield keeps using the "
+                              "definitions it has and tries again every 10 minutes. If this keeps happening, use "
+                              "Report a Problem or Idea in the start menu; the details below help.", parent=self)
+            box.setDetailedText(out.strip()[-3000:])
+            box.exec()
+
+    def quick_scan(self):
+        self.scan([HOME], "Quick scan", "your files")
+
+    def pick_scan(self):
+        d = QFileDialog.getExistingDirectory(self, "Scan a folder or drive", str(HOME))
+        if d:
+            self.scan([d], "Folder scan", d)
+
+    def pick_file(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Scan a file", str(HOME))
+        if f:
+            self.scan([f], "File scan", os.path.basename(f))
+
+    def scan(self, paths, name, what):
+        if self.busy:
+            return
+        self.start_busy("scan", name, "Checking " + what + "…",
+                        "Keep using your computer. You'll see the result here.", True)
+        self.scanline.setText("Counting files…")
+        self.job = ScanJob(paths)
+        self.job.progress.connect(self.scan_progress, Qt.ConnectionType.QueuedConnection)
+        self.job.finished.connect(lambda found, err: self.scan_done(found, err, name, what),
+                                  Qt.ConnectionType.QueuedConnection)
+        self.job.run()
+
+    def scan_progress(self, done, total, current, threats):
+        pct = 100 * done / total if total else 100
+        self.bar.setValue(int(pct))
+        self.set_logo("busy", pct)
+        if current:
+            self.scanline.setText(current)
+        self.scanstats.setText(f"<b>{pct:.0f}%</b> done &nbsp;&nbsp; <b>{done:,}</b> of {total:,} files "
+                               f"&nbsp;&nbsp; <b>{threats}</b> threat{'s' if threats != 1 else ''}")
+        self.scanstats.setTextFormat(Qt.TextFormat.RichText)
+
+    def scan_done(self, found, err, name, what):
+        self.job = None
+        if err == "stopped":
+            shield("log", f"{name} of {what} stopped", timeout=10)
+            self.end_busy()
+            return
+        if err:
+            self.end_busy()
+            QMessageBox.warning(self, "Steel Shield", "The scan couldn't run.\n\n" + err)
+            return
+        for path, sig in found:
+            shield("quarantine-file", path, sig, timeout=60)
+        shield("record-scan", f"{name} of {what}", timeout=10)
+        shield("log", f"SCAN {name} of {what}: found {len(found)}", timeout=10)
+        if found:
+            self.end_busy(("warn", f"{len(found)} threat{'s' if len(found) > 1 else ''} locked in quarantine",
+                           "\n".join(f"{os.path.basename(p)}: {explain(s)}" for p, s in found[:3])
+                           + ("\nNothing was deleted. Open Quarantine to see them or restore one.")))
+        else:
+            self.end_busy(("ok", "No threats found", f"{name} of {what} finished. New downloads are checked "
+                                                     "automatically."))
+
+    def full_scan(self):
+        if self.busy:
+            return
+        if QMessageBox.question(self, "Scan the whole computer?",
+                                "Every user's files, settings, downloads, programs you added and plugged-in drives. "
+                                "It can take an hour or more on a full disk; you can keep working.\n\n"
+                                "The system itself is read-only and checked against its signature at every update, "
+                                "so it isn't scanned again.") != QMessageBox.StandardButton.Yes:
+            return
+        self.start_busy("full", "Full scan", "Checking the whole computer…",
+                        "This can take an hour or more. You can keep working, or close this window: "
+                        "you'll get a message when it's done.", False)
+        self.scanline.setText("Scanning every user's files, settings and drives…")
+        if DEMO:
+            QTimer.singleShot(2000, lambda: self.end_busy(("ok", "No threats found", "The whole computer was checked.")))
+            return
+        self.proc = QProcess(self)
+        self.proc.finished.connect(self.full_done)
+        self.proc.start("pkexec", [HELPER, "fullscan"])
+
+    def full_done(self, code, _status):
+        out = bytes(self.proc.readAllStandardOutput()).decode(errors="replace")
+        if code in (126, 127):
+            self.end_busy()
+            return
+        if code == 2 or out.startswith("error"):
+            self.end_busy()
+            QMessageBox.warning(self, "Steel Shield", "The full scan couldn't run: there are no virus definitions "
+                                                      "yet. Click Fix now first.")
+            return
+        user, system, stuck = [], [], []
+        for line in out.splitlines():
+            p = line.split("\t")
+            if p[0] == "user" and len(p) >= 3:
+                user.append((p[1], p[2]))
+            elif p[0] == "system" and len(p) >= 4:
+                system.append((p[1], p[2]))
+                shield("log", f"QUARANTINED (system) {p[1]} ({p[2]}) as {p[3]}", timeout=10)
+            elif p[0] == "stuck" and len(p) >= 3:
+                stuck.append(p[1])
+                shield("log", f"COULD NOT MOVE {p[1]} ({p[2]})", timeout=10)
+        for path, sig in user:
+            shield("quarantine-file", path, sig, timeout=60)
+        shield("record-scan", "Full scan of the whole computer", timeout=10)
+        total = len(user) + len(system)
+        if total or stuck:
+            self.end_busy(("warn", f"{total} threat{'s' if total != 1 else ''} locked in quarantine",
+                           "Nothing was deleted. Open Quarantine to see what they are or restore one."
+                           + (f"\n{len(stuck)} file(s) couldn't be moved; see History." if stuck else "")))
+        else:
+            self.end_busy(("ok", "No threats found", "The whole computer was checked."))
+
+    # -- Scan page --
+    def build_scan(self):
+        page, v = self.page("Scan", "You can keep using your computer while a scan runs.")
+        grid = QGridLayout()
+        grid.setSpacing(12)
+        types = [
+            ("Quick scan", "Everything in your home folder: Downloads, Desktop, Documents, games and app data.",
+             "Start quick scan", self.quick_scan),
+            ("Full scan", "The whole computer: every user's files, settings, programs you added and plugged-in "
+                          "drives. It can take an hour; you can keep working.", "Start full scan", self.full_scan),
+            ("Scan a folder or drive", "Pick a folder, or a USB drive, to check on its own.", "Choose a folder…",
+             self.pick_scan),
+            ("Scan a file", "Check one file, for example something you were sent.", "Choose a file…", self.pick_file),
+        ]
+        for i, (title, text, act, slot) in enumerate(types):
+            f = QFrame(objectName="scantype")
+            fl = QVBoxLayout(f)
+            fl.setContentsMargins(18, 18, 18, 18)
+            fl.setSpacing(6)
+            t = label(title)
+            t.setStyleSheet("font-size:16px; font-weight:700")
+            fl.addWidget(t)
+            fl.addWidget(label(text, cls="muted", wrap=True))
+            row = QHBoxLayout()
+            row.addWidget(button(act, "primary" if i == 0 else None, slot=slot))
+            row.addStretch(1)
+            fl.addLayout(row)
+            fl.addStretch(1)
+            grid.addWidget(f, i // 2, i % 2)
+        v.addLayout(grid)
+        v.addStretch(1)
+        return page
+
+    # -- Quarantine page --
+    def build_quarantine(self):
+        page, v = self.page("Quarantine", "Files here are locked away and can't run. Delete them, or restore one "
+                                          "if you're sure it's safe.")
+        self.q_empty = label("Quarantine is empty. Anything Steel Shield blocks shows up here.", "empty", wrap=True)
+        self.q_empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(self.q_empty)
+        self.q_table = self.table(["File", "What it is", "Found", ""])
+        v.addWidget(self.q_table, 1)
+        return page
+
+    def table(self, headers):
+        t = QTableWidget(0, len(headers))
+        t.setHorizontalHeaderLabels(headers)
+        t.verticalHeader().hide()
+        t.setShowGrid(False)
+        t.setWordWrap(True)
+        t.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        t.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        hh = t.horizontalHeader()
+        hh.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        hh.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        hh.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft)
+        t.setMinimumHeight(260)
+        return t
+
+    def fill_quarantine(self):
+        items = quarantine_items()
+        self.q_empty.setVisible(not items)
+        self.q_table.setVisible(bool(items))
+        t = self.q_table
+        t.setRowCount(len(items))
+        for r, (qid, path, sig, date, system) in enumerate(items):
+            name = QTableWidgetItem(f"{os.path.basename(path)}\n{os.path.dirname(path)}")
+            t.setItem(r, 0, name)
+            t.setItem(r, 1, QTableWidgetItem(explain(sig).capitalize() + f"\n{sig}"))
+            t.setItem(r, 2, QTableWidgetItem(date))
+            cell = QWidget()
+            h = QHBoxLayout(cell)
+            h.setContentsMargins(6, 4, 6, 4)
+            h.setSpacing(6)
+            h.addWidget(button("Delete", "warn", True, lambda _=False, i=qid, s=system, p=path: self.q_delete(i, s, p)))
+            h.addWidget(button("Restore", None, True, lambda _=False, i=qid, s=system: self.q_restore(i, s)))
+            t.setCellWidget(r, 3, cell)
+        t.resizeRowsToContents()
+
+    def q_delete(self, qid, system, path):
+        if QMessageBox.question(self, "Delete for good?", f"Delete {os.path.basename(path)} for good? "
+                                                         "This can't be undone.") != QMessageBox.StandardButton.Yes:
+            return
+        if system:
+            if run("pkexec", QUAR_HELPER, "delete", qid, timeout=300)[0] == 0:
+                shield("log", f"DELETED (system) {path}", timeout=10)
+        else:
+            shield("delete", qid)
+        self.fill_quarantine()
+        self.refresh()
+
+    def q_restore(self, qid, system):
+        if QMessageBox.question(self, "Restore this file?", "Only restore it if you're sure it's safe. Steel Shield "
+                                                            "will flag it again at the next scan.") \
+                != QMessageBox.StandardButton.Yes:
+            return
+        if system:
+            code, dest = run("pkexec", QUAR_HELPER, "restore", qid, timeout=300)
+            if code == 0:
+                shield("log", f"RESTORED (system) {dest.strip()}", timeout=10)
+        else:
+            shield("restore", qid)
+        self.fill_quarantine()
+        self.refresh()
+
+    # -- History page --
+    def build_history(self):
+        page, v = self.page("History", "Every scan, fix and blocked file, newest first.")
+        self.h_table = self.table(["When", "What happened", "Result"])
+        v.addWidget(self.h_table, 1)
+        return page
+
+    def fill_history(self):
+        rows = history_rows()
+        t = self.h_table
+        t.setRowCount(len(rows))
+        for r, (when, what, res, tone) in enumerate(rows):
+            t.setItem(r, 0, QTableWidgetItem(when))
+            t.setItem(r, 1, QTableWidgetItem(what))
+            p = label(res, cls="pill")
+            p.setProperty("tone", "warn" if tone == "warn" else "")
+            wrap = QWidget()
+            h = QHBoxLayout(wrap)
+            h.setContentsMargins(8, 4, 8, 4)
+            h.addWidget(p)
+            h.addStretch(1)
+            t.setCellWidget(r, 2, wrap)
+        t.resizeRowsToContents()
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        if hasattr(self, "cards"):
+            QTimer.singleShot(0, self.refresh_if_idle)
+
+
+def main():
+    app = QApplication(sys.argv)
+    app.setApplicationName("Steel Shield")
+    app.setDesktopFileName("steel-shield")
+    f = QFont(app.font())
+    f.setPointSizeF(max(f.pointSizeF(), 10.5))
+    app.setFont(f)
+    app.setStyleSheet(QSS)
+    w = Window()
+    w.show()
+    if "--screenshot" in sys.argv:   # for docs: save a picture of the window and quit
+        out = sys.argv[sys.argv.index("--screenshot") + 1]
+        QTimer.singleShot(800, lambda: (w.grab().save(out), app.quit()))
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

@@ -37,6 +37,10 @@ DBDIR="${STEEL_SHIELD_DB:-/var/lib/clamav}"
 # instead of reporting a clean result.
 SEED=/usr/share/steel-shield/definitions
 SYSQ_INDEX=/var/lib/steel-shield/quarantine.tsv
+# Restoring or deleting a file the full scan moved from outside the home folder
+# is the one thing that still asks for the password.
+QUAR_HELPER="$LIBEXEC/steel-shield-quarantine"
+APP_WINDOW="$LIBEXEC/steel-shield-app"
 LIBEXEC="$(dirname "$(dirname "$(readlink -f "$0")")")/libexec"
 SYSTEM_HELPER="$LIBEXEC/steel-shield-system"
 DOWNLOADS="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
@@ -300,46 +304,46 @@ defs_age_hours() {
     echo $(( ($(date +%s) - newest) / 3600 ))
 }
 
-status_lines() { # prints "ok|warn<TAB>text" lines
+status_lines() { # prints "ok|warn<TAB>text<TAB>key" lines (the key is for the app)
     local age
     age="$(defs_age_hours)"
-    if (( age < 0 )); then echo -e "warn\tThere are no virus definitions yet. Click Fix now."
+    if (( age < 0 )); then echo -e "warn\tThere are no virus definitions yet. Click Fix now.\tdefs"
     elif [[ "$(defs_dir)" == "$SEED" ]]; then
-        if (( age > 7 * 24 )); then echo -e "warn\tUsing the built-in virus definitions, $((age / 24)) days old: online updates haven't arrived. Click Fix now."
-        else echo -e "ok\tUsing the built-in virus definitions ($((age / 24)) days old) until the first online update."; fi
-    elif (( age > 48 )); then echo -e "warn\tVirus definitions are $((age / 24)) days old. Click Fix now."
-    else echo -e "ok\tVirus definitions are up to date (checked hourly)."; fi
-    if systemctl is-active --quiet clamav-freshclam.service; then echo -e "ok\tThe definitions updater is running."
-    else echo -e "warn\tThe definitions updater isn't running."; fi
-    if [[ -f "$CONF/downloads-off" ]]; then echo -e "warn\tDownload scanning is switched off."
-    elif systemctl --user is-active --quiet steel-shield-downloads.service; then echo -e "ok\tNew downloads are scanned automatically."
-    else echo -e "warn\tDownload scanning isn't running."; fi
-    if [[ -f "$STATE/last-scan" ]]; then echo -e "ok\tLast scan: $(cat "$STATE/last-scan-what" 2>/dev/null), $(cat "$STATE/last-scan")."
-    else echo -e "ok\tNo scan has run yet."; fi
+        if (( age > 7 * 24 )); then echo -e "warn\tUsing the built-in virus definitions, $((age / 24)) days old: online updates haven't arrived. Click Fix now.\tdefs"
+        else echo -e "ok\tUsing the built-in virus definitions ($((age / 24)) days old) until the first online update.\tdefs"; fi
+    elif (( age > 48 )); then echo -e "warn\tVirus definitions are $((age / 24)) days old. Click Fix now.\tdefs"
+    else echo -e "ok\tVirus definitions are up to date (checked hourly).\tdefs"; fi
+    if systemctl is-active --quiet clamav-freshclam.service; then echo -e "ok\tThe definitions updater is running.\tupdater"
+    else echo -e "warn\tThe definitions updater isn't running.\tupdater"; fi
+    if [[ -f "$CONF/downloads-off" ]]; then echo -e "warn\tDownload scanning is switched off.\tdownloads"
+    elif systemctl --user is-active --quiet steel-shield-downloads.service; then echo -e "ok\tNew downloads are scanned automatically.\tdownloads"
+    else echo -e "warn\tDownload scanning isn't running.\tdownloads"; fi
+    if [[ -f "$STATE/last-scan" ]]; then echo -e "ok\tLast scan: $(cat "$STATE/last-scan-what" 2>/dev/null), $(cat "$STATE/last-scan").\tlastscan"
+    else echo -e "ok\tNo scan has run yet.\tlastscan"; fi
     local n; n="$(find "$QUAR" -mindepth 1 -maxdepth 1 -type d | wc -l)"
-    echo -e "ok\tQuarantine: $n item(s)."
+    echo -e "ok\tQuarantine: $n item(s).\tquarantine"
     # The computer's other protections, where this system has them.
     if systemctl is-active --quiet firewalld || { command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q 'Status: active'; }; then
-        echo -e "ok\tFirewall is on."
-    else echo -e "warn\tFirewall is off."; fi
+        echo -e "ok\tFirewall is on.\tfirewall"
+    else echo -e "warn\tFirewall is off.\tfirewall"; fi
     if [[ -e /run/ostree-booted ]]; then
-        if rpm-ostree status --booted --json 2>/dev/null | grep -q 'ostree-image-signed'; then echo -e "ok\tSystem updates are signature-checked."
-        else echo -e "warn\tSystem updates aren't signature-checked yet (restart after the next update)."; fi
-        echo -e "ok\tSystem files are read-only."
+        if rpm-ostree status --booted --json 2>/dev/null | grep -q 'ostree-image-signed'; then echo -e "ok\tSystem updates are signature-checked.\tsigned"
+        else echo -e "warn\tSystem updates aren't signature-checked yet (restart after the next update).\tsigned"; fi
+        echo -e "ok\tSystem files are read-only.\tsandbox"
     fi
-    if mokutil --sb-state 2>/dev/null | grep -qi enabled; then echo -e "ok\tSecure Boot is on."; else echo -e "ok\tSecure Boot is off (optional)."; fi
+    if mokutil --sb-state 2>/dev/null | grep -qi enabled; then echo -e "ok\tSecure Boot is on.\tsecureboot"; else echo -e "ok\tSecure Boot is off (optional).\tsecureboot"; fi
     # Behaviour watching.
-    if [[ -f "$CONF/guard-off" ]]; then echo -e "warn\tBehaviour watching is switched off."
+    if [[ -f "$CONF/guard-off" ]]; then echo -e "warn\tBehaviour watching is switched off.\tguard"
     elif systemctl --user is-active --quiet steel-shield-guard.service; then
-        echo -e "ok\tBehaviour watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads."
-    else echo -e "warn\tBehaviour watching isn't running."; fi
+        echo -e "ok\tBehaviour watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.\tguard"
+    else echo -e "warn\tBehaviour watching isn't running.\tguard"; fi
     local extra=/var/lib/clamav/steel-shield-extra.hsb
     if [[ -s "$extra" ]] && (( ($(date +%s) - $(stat -c %Y "$extra")) < 4 * 86400 )); then
-        echo -e "ok\tThe extra list of new threats (abuse.ch) is up to date."
+        echo -e "ok\tThe extra list of new threats (abuse.ch) is up to date.\textra"
     fi
     if "$LIBEXEC/steel-shield-dns" status 2>/dev/null | grep -qx on; then
-        echo -e "ok\tDangerous websites are blocked for every app (Quad9)."
-    else echo -e "ok\tDangerous-website blocking is off (optional)."; fi
+        echo -e "ok\tDangerous websites are blocked for every app (Quad9).\tweb"
+    else echo -e "ok\tDangerous-website blocking is off (optional).\tweb"; fi
 }
 
 dashboard() {
@@ -348,7 +352,7 @@ dashboard() {
         lines="$(status_lines)"
         grep -q '^warn' <<< "$lines" && warn=yes
         if [[ $warn == yes ]]; then text="<h2>Needs attention</h2>"; else text="<h2>You are protected</h2>"; fi
-        while IFS=$'\t' read -r kind msg; do
+        while IFS=$'\t' read -r kind msg _; do
             if [[ $kind == ok ]]; then text+="&#10003; $msg<br>"; else text+="<b>&#9888; $msg</b><br>"; fi
         done <<< "$lines"
         local items=(scan "Quick scan (your files)" full "Full scan (the whole computer)" pick "Scan a file or folder" quarantine "Quarantine" history "History")
@@ -500,16 +504,42 @@ system_item() { # an item the full scan moved from outside the home folder
         restore "Restore it (asks for your password)" delete "Delete it for good (asks for your password)")" || return
     case "$action" in
         restore)
-            dest="$(pkexec "$SYSTEM_HELPER" restore "$sid" 2>/dev/null)" && {
+            dest="$(pkexec "$QUAR_HELPER" restore "$sid" 2>/dev/null)" && {
                 log "RESTORED (system) $dest"; notify normal "File restored" "$(basename -- "$dest") is back in $(dirname -- "$dest")."; } ;;
         delete)
             kdialog --title "Quarantine" --warningyesno "Delete $(basename -- "$spath") for good? This can't be undone." \
-                && pkexec "$SYSTEM_HELPER" delete "$sid" && log "DELETED (system) $spath" ;;
+                && pkexec "$QUAR_HELPER" delete "$sid" && log "DELETED (system) $spath" ;;
     esac
 }
 
+set_switch() { # set downloads|guard|web on|off
+    case "$1:$2" in
+        downloads:on) rm -f "$CONF/downloads-off"; systemctl --user enable --now steel-shield-downloads.service ;;
+        downloads:off) touch "$CONF/downloads-off"; systemctl --user disable --now steel-shield-downloads.service ;;
+        guard:on) rm -f "$CONF/guard-off"; systemctl --user enable --now steel-shield-guard.service ;;
+        guard:off) touch "$CONF/guard-off"; systemctl --user disable --now steel-shield-guard.service ;;
+        web:on|web:off) pkexec "$LIBEXEC/steel-shield-dns" "$2" ;;
+        *) echo "usage: steel-shield set downloads|guard|web on|off" >&2; return 2 ;;
+    esac
+    log "SETTING $1 turned $2"
+}
+
+# The app window (steel-shield-app) when Qt for Python is installed; the
+# kdialog menus otherwise.
+open_dashboard() {
+    if [[ -x "$APP_WINDOW" && -z "${STEEL_SHIELD_MENUS:-}" ]] && python3 -c 'import PySide6.QtSvgWidgets' 2>/dev/null; then
+        exec "$APP_WINDOW"
+    fi
+    dashboard
+}
+
 case "${1:-dashboard}" in
-    dashboard) dashboard ;;
+    dashboard) open_dashboard ;;
+    menus) dashboard ;;
+    defs-dir) d="$(defs_dir)"; [[ -n "$d" ]] && echo "$d" ;;
+    set) set_switch "${2:-}" "${3:-}" ;;
+    log) shift; log "$*" ;;
+    record-scan) shift; record_scan "$*" ;;
     fullscan) full_scan; wait ;;
     scan) shift; scan_with_report "$@" ;;
     watch-downloads) watch_downloads ;;
