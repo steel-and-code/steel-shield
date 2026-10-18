@@ -1,19 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE policyconfig PUBLIC "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
  "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
-<!-- Steel Shield: the password prompt says what it is for. Installed to /usr/share/polkit-1/actions/ by make install. -->
+<!-- Steel Shield: the password prompt says what it is for. -->
 <policyconfig>
   <vendor>Steel Shield</vendor>
   <vendor_url>https://github.com/steel-and-code/steel-shield</vendor_url>
+  <!-- Update definitions and scan the whole computer: no password for the
+       person at the computer (T, 2026-10-18). -->
   <action id="org.steel-os.shield.system">
-    <description>Steel Shield: update virus definitions, scan the whole computer, manage quarantine</description>
+    <description>Steel Shield: update virus definitions and scan the whole computer</description>
     <message>Type your password to let Steel Shield update its virus definitions or scan the whole computer.</message>
     <icon_name>steel-shield</icon_name>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
+      <allow_active>yes</allow_active>
     </defaults>
     <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/steel-shield-system</annotate>
+  </action>
+  <!-- Putting back or deleting a file flagged as a threat outside the home
+       folder: always asks. -->
+  <action id="org.steel-os.shield.quarantine">
+    <description>Steel Shield: restore or delete a quarantined system file</description>
+    <message>Type your password to restore or delete a file Steel Shield put in quarantine.</message>
+    <icon_name>steel-shield</icon_name>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+    <annotate key="org.freedesktop.policykit.exec.path">/usr/libexec/steel-shield-quarantine</annotate>
   </action>
 </policyconfig>

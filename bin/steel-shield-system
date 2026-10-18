@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # Steel Shield: the parts that need administrator rights. Run as root, from
-# the dashboard through pkexec (it asks for the user's password) or from the
-# steel-shield-definitions service at boot.
+# the app or dashboard through pkexec, or from the steel-shield-definitions
+# service at boot.
 #
 #   steel-shield-system seed       put the built-in definitions in place if
 #                                  none have downloaded yet (or they're older)
@@ -13,7 +13,11 @@
 #                                  them), "system<TAB>path<TAB>signature<TAB>id"
 #                                  for other files, moved to the system
 #                                  quarantine here.
-#   steel-shield-system restore ID / delete ID   system quarantine items
+#
+# None of these asks for a password (T, 2026-10-18): they only download the
+# official definitions or scan, and a scan only moves files that match a known
+# threat into quarantine. Putting a file back, or deleting one, is in
+# steel-shield-quarantine, which does ask.
 #
 # The built-in definitions ship with the system (/usr/share/steel-shield/
 # definitions), so a new install is protected before it is ever online.
@@ -123,28 +127,9 @@ fullscan() {
     done
 }
 
-restore() {
-    local id="$1" path dest
-    [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+$ && -f "$SQ/$id/file" ]] || { echo "Not in quarantine"; exit 1; }
-    path="$(awk -F'\t' -v i="$id" '$1 == i {print $2}' "$INDEX" | head -1)"
-    dest="$path"; [[ -e "$dest" ]] && dest="${path%.*} (restored).${path##*.}"
-    mkdir -p "$(dirname -- "$dest")"
-    mv -f -- "$SQ/$id/file" "$dest" && chmod 0644 "$dest"
-    rm -rf "${SQ:?}/$id"; sed -i "/^$id	/d" "$INDEX"
-    echo "$dest"
-}
-
-delete() {
-    local id="$1"
-    [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+$ && -d "$SQ/$id" ]] || exit 1
-    rm -rf "${SQ:?}/$id"; sed -i "/^$id	/d" "$INDEX"
-}
-
 case "${1:-}" in
     seed) seed ;;
     update) update ;;
     fullscan) fullscan ;;
-    restore) restore "${2:-}" ;;
-    delete) delete "${2:-}" ;;
-    *) echo "usage: steel-shield-system seed|update|fullscan|restore ID|delete ID" >&2; exit 2 ;;
+    *) echo "usage: steel-shield-system seed|update|fullscan" >&2; exit 2 ;;
 esac

@@ -1,0 +1,33 @@
+#!/usr/bin/bash
+# Steel Shield: restore or delete a file that the full scan moved from outside
+# a home folder into the system quarantine. Runs as root through pkexec and
+# always asks for the password: putting back a file flagged as a virus, or
+# deleting it, should be a deliberate choice. (Updating definitions and
+# scanning, in steel-shield-system, don't ask.)
+#
+#   steel-shield-quarantine restore ID   prints where the file went back to
+#   steel-shield-quarantine delete ID
+
+set -uo pipefail
+
+SQ=/var/lib/steel-shield/quarantine
+INDEX=/var/lib/steel-shield/quarantine.tsv   # id, path, signature, date
+
+[[ $EUID -eq 0 ]] || { echo "steel-shield-quarantine must run as root" >&2; exit 1; }
+id="${2:-}"
+[[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+$ && -d "$SQ/$id" ]] || { echo "Not in quarantine" >&2; exit 1; }
+
+case "${1:-}" in
+    restore)
+        [[ -f "$SQ/$id/file" ]] || exit 1
+        path="$(awk -F'\t' -v i="$id" '$1 == i {print $2}' "$INDEX" | head -1)"
+        [[ "$path" == /* ]] || exit 1
+        dest="$path"; [[ -e "$dest" ]] && dest="${path%.*} (restored).${path##*.}"
+        mkdir -p "$(dirname -- "$dest")"
+        mv -f -- "$SQ/$id/file" "$dest" && chmod 0644 "$dest"
+        rm -rf "${SQ:?}/$id"; sed -i "/^$id	/d" "$INDEX"
+        echo "$dest" ;;
+    delete)
+        rm -rf "${SQ:?}/$id"; sed -i "/^$id	/d" "$INDEX" ;;
+    *) echo "usage: steel-shield-quarantine restore|delete ID" >&2; exit 2 ;;
+esac
