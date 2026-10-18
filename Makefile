@@ -36,4 +36,4 @@ test:
 	bash tests/selftest.sh bin/steel-shield
 	bash bin/steel-shield-guard selftest
 	bash -n bin/steel-shield-dns && bash -n bin/steel-shield-extra && bash -n bin/steel-shield-system && bash -n bin/steel-shield-quarantine
-	python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" bin/steel-shield-app
+	if command -v python3 >/dev/null; then python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" bin/steel-shield-app; fi
