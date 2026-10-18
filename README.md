@@ -35,6 +35,15 @@ systems.
 - **Light:** the scanner runs only while scanning, then exits. Every scan runs
   at the lowest CPU and disk priority.
 
+- **An app window**, like Norton or McAfee: Status (a shield that is blue when
+  you're protected and orange when something needs attention, and one card per
+  protection with its own switch), Scan (with a progress bar), Quarantine and
+  History. It needs Qt for Python (`python3-pyside6`); without it,
+  `steel-shield` shows simple kdialog menus instead.
+- **No password for everyday jobs:** Fix now (updating definitions) and Full
+  scan run without one. Restoring or deleting a file the full scan found
+  outside a home folder asks for it.
+
 Virus definitions come from ClamAV (Cisco Talos) and update every hour through
 ClamAV's own `freshclam` service, which Steel Shield restarts every 10 minutes
 if it stops. A distribution can ship definitions with the system in
@@ -85,8 +94,8 @@ sudo systemctl enable --now steel-shield-definitions.service clamav-freshclam.se
 
 Log out and back in. Open **Steel Shield** from the application menu.
 
-On Fedora: `sudo dnf install clamav clamav-freshclam inotify-tools libnotify kdialog`.
-On Debian and Ubuntu: `sudo apt install clamav clamav-freshclam inotify-tools libnotify-bin kdialog`.
+On Fedora: `sudo dnf install clamav clamav-freshclam inotify-tools libnotify kdialog python3-pyside6`.
+On Debian and Ubuntu: `sudo apt install clamav clamav-freshclam inotify-tools libnotify-bin kdialog python3-pyside6.qtwidgets python3-pyside6.qtsvgwidgets`.
 
 ## Use
 

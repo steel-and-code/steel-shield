@@ -37,12 +37,12 @@ DBDIR="${STEEL_SHIELD_DB:-/var/lib/clamav}"
 # instead of reporting a clean result.
 SEED=/usr/share/steel-shield/definitions
 SYSQ_INDEX=/var/lib/steel-shield/quarantine.tsv
+LIBEXEC="$(dirname "$(dirname "$(readlink -f "$0")")")/libexec"
+SYSTEM_HELPER="$LIBEXEC/steel-shield-system"
 # Restoring or deleting a file the full scan moved from outside the home folder
 # is the one thing that still asks for the password.
 QUAR_HELPER="$LIBEXEC/steel-shield-quarantine"
 APP_WINDOW="$LIBEXEC/steel-shield-app"
-LIBEXEC="$(dirname "$(dirname "$(readlink -f "$0")")")/libexec"
-SYSTEM_HELPER="$LIBEXEC/steel-shield-system"
 DOWNLOADS="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
 mkdir -p "$QUAR" "$STATE" "$CONF"
 chmod 0700 "$DATA" "$QUAR" 2>/dev/null || true
