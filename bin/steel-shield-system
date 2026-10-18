@@ -1,0 +1,150 @@
+#!/usr/bin/bash
+# Steel Shield: the parts that need administrator rights. Run as root, from
+# the dashboard through pkexec (it asks for the user's password) or from the
+# steel-shield-definitions service at boot.
+#
+#   steel-shield-system seed       put the built-in definitions in place if
+#                                  none have downloaded yet (or they're older)
+#   steel-shield-system update     download the newest definitions now and
+#                                  restart the hourly updater; prints the result
+#   steel-shield-system fullscan   scan the whole computer. Prints one line per
+#                                  threat: "user<TAB>path<TAB>signature" for the
+#                                  user's own files (the dashboard quarantines
+#                                  them), "system<TAB>path<TAB>signature<TAB>id"
+#                                  for other files, moved to the system
+#                                  quarantine here.
+#   steel-shield-system restore ID / delete ID   system quarantine items
+#
+# The built-in definitions ship with the system (/usr/share/steel-shield/
+# definitions), so a new install is protected before it is ever online.
+
+set -uo pipefail
+
+SEED=/usr/share/steel-shield/definitions
+DB=/var/lib/clamav
+SQ=/var/lib/steel-shield/quarantine
+INDEX=/var/lib/steel-shield/quarantine.tsv   # id, path, signature, date (no file contents)
+# The account that owns the definitions: clamupdate on Fedora, clamav on Debian/Ubuntu.
+DBUSER=clamupdate; id clamupdate >/dev/null 2>&1 || DBUSER=clamav
+
+[[ $EUID -eq 0 ]] || { echo "steel-shield-system must run as root" >&2; exit 1; }
+
+version_of() { # version_of file.cvd -> number (0 if unknown)
+    local v
+    v="$(sigtool --info "$1" 2>/dev/null | sed -n 's/^Version: *//p' | head -1)"
+    echo "${v:-0}"
+}
+
+seed() {
+    install -d -o "$DBUSER" -g "$DBUSER" -m 0755 "$DB"
+    [[ -d "$SEED" ]] || return 0
+    local f base have new old
+    for f in "$SEED"/*.c?d; do
+        [[ -f "$f" ]] || continue
+        base="$(basename "$f")"; base="${base%.*}"
+        have="$(ls "$DB/$base".c?d 2>/dev/null | head -1)"
+        new="$(version_of "$f")"
+        old=0; [[ -n "$have" ]] && old="$(version_of "$have")"
+        if (( new > old )); then
+            [[ -n "$have" ]] && rm -f "$have"
+            cp -p "$f" "$DB/"
+            chown "$DBUSER:$DBUSER" "$DB/$(basename "$f")"
+            echo "Built-in $base definitions (version $new) put in place."
+        fi
+    done
+    command -v restorecon >/dev/null && restorecon -R "$DB" 2>/dev/null
+    return 0
+}
+
+update() {
+    seed
+    systemctl stop clamav-freshclam.service 2>/dev/null
+    local out rc
+    out="$(freshclam --foreground --show-progress=no 2>&1)"; rc=$?
+    systemctl enable --now clamav-freshclam.service 2>/dev/null
+    sleep 2
+    echo "$out" | grep -vE '^\s*$' | tail -12
+    if [[ $rc -ne 0 ]]; then
+        echo "--- updater log ---"
+        journalctl -u clamav-freshclam.service -b --no-pager -n 12 2>/dev/null
+        exit 1
+    fi
+    if ! systemctl is-active --quiet clamav-freshclam.service; then
+        echo "The definitions downloaded, but the hourly updater stopped again:"
+        journalctl -u clamav-freshclam.service -b --no-pager -n 12 2>/dev/null
+        exit 1
+    fi
+}
+
+defs_dir() {
+    if ls "$DB"/main.c?d "$DB"/daily.c?d >/dev/null 2>&1; then echo "$DB"
+    elif ls "$SEED"/main.c?d >/dev/null 2>&1; then echo "$SEED"; fi
+}
+
+fullscan() {
+    local uid="${PKEXEC_UID:-0}" dir roots=() r real seen=" " path sig id owner
+    dir="$(defs_dir)"
+    [[ -n "$dir" ]] || { echo "error	No virus definitions yet"; exit 2; }
+    # Everything people and programs can change. /usr (the system itself) is
+    # read-only and checked against its signature at every update, and app
+    # and system images (Flatpak, containers) are signed downloads, so they
+    # are left out; that keeps a full scan to minutes, not hours.
+    for r in /home /var/home /root /etc /opt /srv /usr/local /tmp /var /mnt /media /run/media; do
+        [[ -d "$r" ]] || continue
+        real="$(readlink -f "$r")"
+        [[ "$seen" == *" $real "* ]] && continue
+        seen+="$real "; roots+=("$real")
+    done
+    mkdir -p "$SQ"; chmod 0700 "$SQ"; touch "$INDEX"; chmod 0644 "$INDEX"
+    nice -n 19 ionice -c 3 clamscan -r --no-summary --infected --stdout -d "$dir" \
+        --exclude-dir='^/var/lib/(containers|flatpak|clamav|steel-shield|ostree)' \
+        --exclude-dir='^/var/(cache|log|tmp/.*flatpak)' \
+        --exclude-dir='/\.local/share/(steel-shield|containers|flatpak)$' \
+        --exclude-dir='^/sysroot' --exclude-dir='^/ostree' \
+        "${roots[@]}" 2>/dev/null \
+    | sed -n 's/^\(.*\): \(.*\) FOUND$/\1\t\2/p' \
+    | while IFS=$'\t' read -r path sig; do
+        [[ -e "$path" ]] || continue
+        owner="$(stat -c %u -- "$path" 2>/dev/null || echo 0)"
+        if [[ "$owner" == "$uid" && "$path" == /home/* || "$owner" == "$uid" && "$path" == /var/home/* ]]; then
+            printf 'user\t%s\t%s\n' "$path" "$sig"
+            continue
+        fi
+        id="$(date +%Y%m%d-%H%M%S)-$RANDOM"
+        mkdir -p "$SQ/$id"
+        if mv -f -- "$path" "$SQ/$id/file"; then
+            chmod 0400 "$SQ/$id/file"
+            printf '%s\t%s\t%s\t%s\n' "$id" "$path" "$sig" "$(date '+%Y-%m-%d %H:%M')" >> "$INDEX"
+            printf 'system\t%s\t%s\t%s\n' "$path" "$sig" "$id"
+        else
+            rmdir "$SQ/$id" 2>/dev/null
+            printf 'stuck\t%s\t%s\n' "$path" "$sig"
+        fi
+    done
+}
+
+restore() {
+    local id="$1" path dest
+    [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+$ && -f "$SQ/$id/file" ]] || { echo "Not in quarantine"; exit 1; }
+    path="$(awk -F'\t' -v i="$id" '$1 == i {print $2}' "$INDEX" | head -1)"
+    dest="$path"; [[ -e "$dest" ]] && dest="${path%.*} (restored).${path##*.}"
+    mkdir -p "$(dirname -- "$dest")"
+    mv -f -- "$SQ/$id/file" "$dest" && chmod 0644 "$dest"
+    rm -rf "${SQ:?}/$id"; sed -i "/^$id	/d" "$INDEX"
+    echo "$dest"
+}
+
+delete() {
+    local id="$1"
+    [[ "$id" =~ ^[0-9]{8}-[0-9]{6}-[0-9]+$ && -d "$SQ/$id" ]] || exit 1
+    rm -rf "${SQ:?}/$id"; sed -i "/^$id	/d" "$INDEX"
+}
+
+case "${1:-}" in
+    seed) seed ;;
+    update) update ;;
+    fullscan) fullscan ;;
+    restore) restore "${2:-}" ;;
+    delete) delete "${2:-}" ;;
+    *) echo "usage: steel-shield-system seed|update|fullscan|restore ID|delete ID" >&2; exit 2 ;;
+esac

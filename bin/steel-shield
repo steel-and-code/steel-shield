@@ -9,6 +9,7 @@
 #
 #   steel-shield                    the dashboard
 #   steel-shield scan PATH...       scan files or folders now (with a report)
+#   steel-shield fullscan           scan the whole computer (asks for the password)
 #   steel-shield watch-downloads    background: scan new files in Downloads
 #   steel-shield usb-check          background: offer to scan new USB drives
 #   steel-shield scan-usb MOUNT     scan one drive, risky files first
@@ -31,7 +32,13 @@ CONF="${XDG_CONFIG_HOME:-$HOME/.config}/steel-shield"
 ALLOWED="$CONF/allowed-sha256"
 LOG="$STATE/history.log"
 DBDIR="${STEEL_SHIELD_DB:-/var/lib/clamav}"
+# Definitions that ship with the system, used until the first download (and
+# whenever they are newer). A scan never runs without definitions: it says so
+# instead of reporting a clean result.
+SEED=/usr/share/steel-shield/definitions
+SYSQ_INDEX=/var/lib/steel-shield/quarantine.tsv
 LIBEXEC="$(dirname "$(dirname "$(readlink -f "$0")")")/libexec"
+SYSTEM_HELPER="$LIBEXEC/steel-shield-system"
 DOWNLOADS="$(xdg-user-dir DOWNLOAD 2>/dev/null || echo "$HOME/Downloads")"
 mkdir -p "$QUAR" "$STATE" "$CONF"
 chmod 0700 "$DATA" "$QUAR" 2>/dev/null || true
@@ -90,11 +97,27 @@ explain() {
 # ---- Scanning ---------------------------------------------------------------
 # Runs clamscan at the lowest priority on the given paths (or a file list with
 # -f). Prints "path<TAB>signature" for each detection.
+defs_dir() { # the folder of definitions to use, or nothing
+    if [[ -n "${STEEL_SHIELD_DB:-}" ]]; then echo "$STEEL_SHIELD_DB"
+    elif ls "$DBDIR"/main.c?d "$DBDIR"/daily.c?d >/dev/null 2>&1; then echo "$DBDIR"
+    elif ls "$SEED"/main.c?d >/dev/null 2>&1; then echo "$SEED"; fi
+}
+
 run_clamscan() {
-    local db_args=()
-    [[ -n "${STEEL_SHIELD_DB:-}" ]] && db_args=(-d "$STEEL_SHIELD_DB")
-    # clamscan exits 1 when it finds something; that is a result, not an error.
-    { nice -n 19 ionice -c 3 clamscan --no-summary --infected --stdout "${db_args[@]}" "$@" 2>/dev/null || true; } \
+    local dir rc
+    rm -f "$STATE/scan-error"
+    dir="$(defs_dir)"
+    if [[ -z "$dir" ]]; then
+        echo "There are no virus definitions yet, so nothing could be checked." > "$STATE/scan-error"
+        return 0
+    fi
+    # clamscan exits 1 when it finds something (a result) and 2 on an error.
+    { nice -n 19 ionice -c 3 clamscan --no-summary --infected --stdout -d "$dir" "$@" 2>"$STATE/scan-stderr"
+      rc=$?
+      if [[ $rc -ge 2 ]] && grep -qiE 'no supported database|can.t open|malformed database|database.*error' "$STATE/scan-stderr"; then
+          { echo "The virus definitions couldn't be loaded:"; head -3 "$STATE/scan-stderr"; } > "$STATE/scan-error"
+      fi
+      true; } \
         | sed -n 's/^\(.*\): \(.*\) FOUND$/\1\t\2/p'
 }
 
@@ -269,8 +292,10 @@ details() {
 
 # ---- Health and dashboard ---------------------------------------------------
 defs_age_hours() {
-    local newest
-    newest="$(stat -c %Y "$DBDIR"/daily.c?d "$DBDIR"/main.c?d 2>/dev/null | sort -n | tail -1)"
+    local newest dir
+    dir="$(defs_dir)"
+    [[ -n "$dir" ]] || { echo -1; return; }
+    newest="$(stat -c %Y "$dir"/daily.c?d "$dir"/main.c?d 2>/dev/null | sort -n | tail -1)"
     [[ -n "$newest" ]] || { echo -1; return; }
     echo $(( ($(date +%s) - newest) / 3600 ))
 }
@@ -278,8 +303,11 @@ defs_age_hours() {
 status_lines() { # prints "ok|warn<TAB>text" lines
     local age
     age="$(defs_age_hours)"
-    if (( age < 0 )); then echo -e "warn\tVirus definitions haven't downloaded yet. Check the internet connection."
-    elif (( age > 48 )); then echo -e "warn\tVirus definitions are $((age / 24)) days old."
+    if (( age < 0 )); then echo -e "warn\tThere are no virus definitions yet. Click Fix now."
+    elif [[ "$(defs_dir)" == "$SEED" ]]; then
+        if (( age > 7 * 24 )); then echo -e "warn\tUsing the built-in virus definitions, $((age / 24)) days old: online updates haven't arrived. Click Fix now."
+        else echo -e "ok\tUsing the built-in virus definitions ($((age / 24)) days old) until the first online update."; fi
+    elif (( age > 48 )); then echo -e "warn\tVirus definitions are $((age / 24)) days old. Click Fix now."
     else echo -e "ok\tVirus definitions are up to date (checked hourly)."; fi
     if systemctl is-active --quiet clamav-freshclam.service; then echo -e "ok\tThe definitions updater is running."
     else echo -e "warn\tThe definitions updater isn't running."; fi
@@ -323,7 +351,7 @@ dashboard() {
         while IFS=$'\t' read -r kind msg; do
             if [[ $kind == ok ]]; then text+="&#10003; $msg<br>"; else text+="<b>&#9888; $msg</b><br>"; fi
         done <<< "$lines"
-        local items=(scan "Scan now (your home folder)" pick "Scan a file or folder" quarantine "Quarantine" history "History")
+        local items=(scan "Quick scan (your files)" full "Full scan (the whole computer)" pick "Scan a file or folder" quarantine "Quarantine" history "History")
         [[ $warn == yes ]] && items=(fix "Fix now" "${items[@]}")
         if [[ -f "$CONF/downloads-off" ]]; then items+=(toggle "Turn download scanning on")
         else items+=(toggle "Turn download scanning off"); fi
@@ -333,12 +361,8 @@ dashboard() {
         else items+=(dns "Block dangerous websites for every app"); fi
         choice="$(kdialog --title "$APP" --icon "$ICON" --geometry 560x520 --menu "$text" "${items[@]}")" || exit 0
         case "$choice" in
-            fix)
-                pkexec systemctl restart clamav-freshclam.service 2>/dev/null || true
-                rm -f "$CONF/downloads-off" "$CONF/guard-off"
-                systemctl --user restart steel-shield-downloads.service 2>/dev/null || true
-                systemctl --user restart steel-shield-guard.service 2>/dev/null || true
-                ;;
+            fix) fix_now ;;
+            full) full_scan ;;
             guard)
                 if [[ -f "$CONF/guard-off" ]]; then
                     rm -f "$CONF/guard-off"; systemctl --user enable --now steel-shield-guard.service
@@ -370,10 +394,64 @@ dashboard() {
     done
 }
 
+fix_now() {
+    local out rc
+    rm -f "$CONF/downloads-off" "$CONF/guard-off"
+    systemctl --user restart steel-shield-downloads.service 2>/dev/null || true
+    systemctl --user restart steel-shield-guard.service 2>/dev/null || true
+    kdialog --title "$APP" --icon "$ICON" --passivepopup "Downloading the newest virus definitions ..." 8
+    out="$(pkexec "$SYSTEM_HELPER" update 2>&1)"; rc=$?
+    if [[ $rc -eq 126 || $rc -eq 127 ]]; then return; fi   # password window closed
+    if [[ $rc -eq 0 ]]; then
+        kdialog --title "$APP" --icon "$ICON" --msgbox "<h3>Virus definitions are up to date</h3><p>Steel Shield checks for new ones every hour from now on.</p>"
+    else
+        kdialog --title "$APP" --icon "$ICON" --sorry "<h3>The virus definitions couldn't be updated</h3>
+<p>Steel Shield keeps using the definitions it has, and tries again every 10 minutes. If this keeps happening, use <b>Report a Problem or Idea</b> in the start menu; these details help:</p>
+<pre>$(sed 's/&/\&amp;/g; s/</\&lt;/g' <<< "$out" | tail -15)</pre>"
+    fi
+}
+
+full_scan() {
+    kdialog --title "$APP" --icon "$ICON" --yesno "<h3>Scan the whole computer?</h3>
+<p>Every user's files, settings, downloads, programs you added and plugged-in drives. It can take an hour or more on a full disk; you can keep working, and you get a message when it's done.</p>
+<p>The system itself is read-only and checked against its signature at every update, so it isn't scanned again.</p>" \
+        --yes-label "Scan now" --no-label "Cancel" || return
+    (
+        local out rc found=0 sysfound=0 stuck=0 kind path sig id
+        notify low "Full scan started" "Steel Shield is checking the whole computer. You can keep working."
+        out="$(pkexec "$SYSTEM_HELPER" fullscan 2>/dev/null)"; rc=$?
+        if [[ $rc -eq 126 || $rc -eq 127 ]]; then exit 0; fi
+        if [[ $rc -eq 2 ]] || grep -q '^error' <<< "$out"; then
+            notify critical "The full scan couldn't run" "There are no virus definitions yet. Open Steel Shield and click Fix now."
+            exit 0
+        fi
+        printf '%s\n' "$out" | awk -F'\t' '$1 == "user" {print $2 "\t" $3}' | handle_detections
+        found="$(cat "$STATE/last-found" 2>/dev/null || echo 0)"
+        sysfound="$(grep -c '^system' <<< "$out")"
+        stuck="$(grep -c '^stuck' <<< "$out")"
+        while IFS=$'\t' read -r kind path sig id; do
+            [[ "$kind" == system ]] && log "QUARANTINED (system) $path ($sig) as $id"
+        done <<< "$out"
+        record_scan "Full scan of the whole computer"
+        local total=$((found + sysfound))
+        if [[ $total -eq 0 && $stuck -eq 0 ]]; then
+            notify normal "Full scan: no threats found" "The whole computer was checked."
+        else
+            notify critical "Full scan: $total threat(s) moved to quarantine" \
+                "Open Steel Shield, Quarantine, to see what they are or restore one.$([[ $stuck -gt 0 ]] && echo " $stuck file(s) couldn't be moved; see History.")"
+            grep '^stuck' <<< "$out" | while IFS=$'\t' read -r kind path sig; do log "COULD NOT MOVE $path ($sig)"; done
+        fi
+    ) &
+}
+
 scan_with_report() {
     local found
     kdialog --title "$APP" --icon "$ICON" --passivepopup "Scanning $1 ... this can take a while." 5
     run_clamscan -r --exclude-dir='/\.local/share/steel-shield$' --exclude-dir='/\.local/share/Steam$' "$@" | handle_detections
+    if [[ -s "$STATE/scan-error" ]]; then
+        kdialog --title "$APP" --icon "$ICON" --sorry "<h3>The scan couldn't run</h3><p>$(cat "$STATE/scan-error")</p><p>Open Steel Shield and click <b>Fix now</b>.</p>"
+        return
+    fi
     record_scan "$*"
     found="$(cat "$STATE/last-found" 2>/dev/null || echo 0)"
     if [[ "$found" == 0 ]]; then
@@ -390,11 +468,18 @@ quarantine_view() {
         id="$(basename "$d")"
         items+=("$id" "$(basename -- "$(info_get "$id" path)") ($(info_get "$id" date))")
     done
+    if [[ -s "$SYSQ_INDEX" ]]; then
+        local sid spath ssig sdate
+        while IFS=$'\t' read -r sid spath ssig sdate; do
+            [[ -n "$sid" ]] && items+=("sys:$sid" "$(basename -- "$spath") ($sdate, from $(dirname -- "$spath"))")
+        done < "$SYSQ_INDEX"
+    fi
     if [[ ${#items[@]} -eq 0 ]]; then
         kdialog --title "$APP" --icon "$ICON" --msgbox "Quarantine is empty."
         return
     fi
     id="$(kdialog --title "Quarantine" --icon "$ICON" --menu "Pick an item to see what it is, restore it or delete it." "${items[@]}")" || return
+    if [[ "$id" == sys:* ]]; then system_item "${id#sys:}"; return; fi
     action="$(kdialog --title "Quarantine" --icon "$ICON" --menu "$(explain "$(info_get "$id" signature)")" \
         details "Details" restore "Restore it" allow "Restore it and always allow this file" delete "Delete it for good")" || return
     case "$action" in
@@ -407,8 +492,25 @@ quarantine_view() {
     esac
 }
 
+system_item() { # an item the full scan moved from outside the home folder
+    local sid="$1" spath ssig action dest
+    spath="$(awk -F'\t' -v i="$sid" '$1 == i {print $2}' "$SYSQ_INDEX")"
+    ssig="$(awk -F'\t' -v i="$sid" '$1 == i {print $3}' "$SYSQ_INDEX")"
+    action="$(kdialog --title "Quarantine" --icon "$ICON" --menu "<b>$(basename -- "$spath")</b> from $(dirname -- "$spath"): $(explain "$ssig")" \
+        restore "Restore it (asks for your password)" delete "Delete it for good (asks for your password)")" || return
+    case "$action" in
+        restore)
+            dest="$(pkexec "$SYSTEM_HELPER" restore "$sid" 2>/dev/null)" && {
+                log "RESTORED (system) $dest"; notify normal "File restored" "$(basename -- "$dest") is back in $(dirname -- "$dest")."; } ;;
+        delete)
+            kdialog --title "Quarantine" --warningyesno "Delete $(basename -- "$spath") for good? This can't be undone." \
+                && pkexec "$SYSTEM_HELPER" delete "$sid" && log "DELETED (system) $spath" ;;
+    esac
+}
+
 case "${1:-dashboard}" in
     dashboard) dashboard ;;
+    fullscan) full_scan; wait ;;
     scan) shift; scan_with_report "$@" ;;
     watch-downloads) watch_downloads ;;
     usb-check) usb_check ;;
