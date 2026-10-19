@@ -1,0 +1,58 @@
+name: Release
+
+# Every merge to main is a version, numbered like Steel OS (BBE, 2026-10-19):
+# VERSION holds the starting point (major.minor); the n-th merge since it
+# changed is MAJOR.(MINOR + n // 10).(n % 10). Each one becomes a GitHub
+# release with the merge's title as its note and a source archive attached
+# (installable with `make install`). Packages (.deb, .rpm) will be attached
+# here too when they exist. steel-os.org/steel-shield shows the newest.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Work out the version
+        id: v
+        run: |
+          set -euo pipefail
+          major="$(cut -d. -f1 VERSION)"; minor="$(cut -d. -f2 VERSION)"
+          since="$(git log -1 --first-parent --format=%H -- VERSION)"
+          n="$(git rev-list --count --first-parent "$since..HEAD")"
+          version="$major.$((minor + n / 10)).$((n % 10))"
+          title="$(git log -1 --first-parent --format=%b | grep -v '^Co-Authored-By' | grep -v '^\s*$' | head -1)"
+          [[ -n "$title" ]] || title="$(git log -1 --format=%s)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "title=$title" >> "$GITHUB_OUTPUT"
+          echo "Steel Shield $version: $title"
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+          TITLE: ${{ steps.v.outputs.title }}
+        run: |
+          set -euo pipefail
+          if gh release view "v$VERSION" >/dev/null 2>&1; then
+            echo "v$VERSION already exists (a re-run); nothing to do."; exit 0
+          fi
+          git archive --format=tar.gz --prefix="steel-shield-$VERSION/" -o "steel-shield-$VERSION.tar.gz" HEAD
+          sha256sum "steel-shield-$VERSION.tar.gz" > "steel-shield-$VERSION.tar.gz.sha256"
+          printf '%s\n\nInstall from source on Fedora, Debian or Ubuntu: unpack, then `sudo make install` (see README). Packages for app stores are planned.\n' "$TITLE" > notes.md
+          gh release create "v$VERSION" --title "Steel Shield $VERSION" --notes-file notes.md \
+            "steel-shield-$VERSION.tar.gz" "steel-shield-$VERSION.tar.gz.sha256"

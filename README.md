@@ -51,6 +51,13 @@ if it stops. A distribution can ship definitions with the system in
 `steel-shield-definitions` service puts them in place at boot when nothing
 newer has downloaded, so a new install is protected before it is ever online.
 
+## Versions and releases
+
+Every change merged to `main` is a numbered release, like Steel OS: 0.1.0,
+0.1.1 … 0.1.9, 0.2.0. `VERSION` holds the starting point (major.minor); 1.0 is
+a decision, made by changing it. Each release is on GitHub with a source
+archive; steel-os.org/steel-shield shows the newest.
+
 ## Behaviour watching
 
 Definitions only know threats that have been seen before, so Steel Shield also
