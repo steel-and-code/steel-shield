@@ -45,6 +45,8 @@ SYSQ_INDEX = Path("/var/lib/steel-shield/quarantine.tsv")
 # The scam checker is an opt-in add-on (T, 2026-10-19): off until switched on.
 CONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "steel-shield"
 SCAM_ON = CONF / "scamcheck-on"
+# The "Is this a scam?" button for Thunderbird, packaged by the build.
+SCAM_XPI = str(Path(HELPER).parent.parent / "share" / "steel-shield" / "steel-shield-scamcheck.xpi")
 SCAMCHECK = str(Path(HELPER).with_name("steel-shield-scamcheck"))
 DEMO = not Path(SHIELD).exists()   # no steel-shield here: show sample data (for screenshots)
 
@@ -1172,8 +1174,58 @@ class Window(QMainWindow):
                           "name that doesn't match the address, a rush to act, a request for gift cards, codes or "
                           "passwords. When in doubt, go to the company's website yourself instead of clicking.",
                           cls="muted", wrap=True))
+        tb = QFrame(objectName="scantype")
+        tl = QVBoxLayout(tb)
+        tl.setContentsMargins(18, 18, 18, 18)
+        tl.setSpacing(6)
+        t = label("Use Thunderbird for email?")
+        t.setStyleSheet("font-size:16px; font-weight:700")
+        tl.addWidget(t)
+        tl.addWidget(label("Add an Is this a scam? button to Thunderbird: one click on any open email gives the same "
+                           "verdict and reasons, right there.", cls="muted", wrap=True))
+        row = QHBoxLayout()
+        row.addWidget(button("Add the button to Thunderbird", None, slot=self.add_thunderbird_button))
+        row.addStretch(1)
+        tl.addLayout(row)
+        v.addWidget(tb)
         v.addStretch(1)
         return page
+
+    def add_thunderbird_button(self):
+        """Copy the add-on into every Thunderbird profile on this computer (Flatpak and ordinary)."""
+        xpi = Path(SCAM_XPI)
+        if not xpi.is_file():
+            QMessageBox.warning(self, "Steel Shield", "The Thunderbird add-on isn't on this computer yet. It comes with "
+                                                      "the next Steel Shield update.")
+            return
+        roots = [HOME / ".var/app/org.mozilla.Thunderbird/.thunderbird", HOME / ".thunderbird",
+                 HOME / "snap/thunderbird/common/.thunderbird"]
+        profiles = []
+        for root in roots:
+            if root.is_dir():
+                profiles += [d for d in root.iterdir() if d.is_dir() and (d / "prefs.js").exists()]
+        if not profiles:
+            QMessageBox.information(self, "Steel Shield", "Thunderbird hasn't been set up on this computer yet. Install it "
+                                                          "from the Steel OS Portal (Steel Apps, Everyday), open it once "
+                                                          "and set up your email, then click this again.")
+            return
+        done = 0
+        for prof in profiles:
+            try:
+                ext = prof / "extensions"
+                ext.mkdir(exist_ok=True)
+                shutil.copyfile(xpi, ext / "scamcheck@steel-os.org.xpi")
+                done += 1
+            except OSError:
+                pass
+        if done:
+            shield("log", "Thunderbird: Is this a scam? button added", timeout=10)
+            QMessageBox.information(self, "Steel Shield",
+                                    "Done. Close Thunderbird completely and open it again. If it asks about a new "
+                                    "add-on, click Enable. Then open any email: the Is this a scam? button is in the "
+                                    "message's toolbar.")
+        else:
+            QMessageBox.warning(self, "Steel Shield", "The add-on couldn't be copied into Thunderbird's folder.")
 
     def scam_check_text(self):
         text = self.scam_text.toPlainText().strip()

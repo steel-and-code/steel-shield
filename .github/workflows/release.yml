@@ -57,6 +57,10 @@ jobs:
           fi
           git archive --format=tar.gz --prefix="steel-shield-$VERSION/" -o "steel-shield-$VERSION.tar.gz" HEAD
           sha256sum "steel-shield-$VERSION.tar.gz" > "steel-shield-$VERSION.tar.gz.sha256"
-          printf '%s\n\nInstall from source on Fedora, Debian or Ubuntu: unpack, then `sudo make install` (see README). Packages for app stores are planned.\n' "$TITLE" > notes.md
+          # The "Is this a scam?" button for Thunderbird, versioned like the release.
+          sed -i "s/\"version\": \"[0-9.]*\"/\"version\": \"$VERSION\"/" thunderbird/manifest.json
+          make steel-shield-scamcheck.xpi
+          cp steel-shield-scamcheck.xpi "steel-shield-scamcheck-thunderbird-$VERSION.xpi"
+          printf '%s\n\nInstall from source on Fedora, Debian or Ubuntu: unpack, then `sudo make install` (see README). Packages for app stores are planned.\n\n**Thunderbird users (any Linux, Windows or Mac):** the `.xpi` is the *Is this a scam?* button. In Thunderbird: menu, Add-ons and Themes, the gear, Install Add-on From File, pick it.\n' "$TITLE" > notes.md
           gh release create "v$VERSION" --title "Steel Shield $VERSION" --notes-file notes.md \
-            "steel-shield-$VERSION.tar.gz" "steel-shield-$VERSION.tar.gz.sha256"
+            "steel-shield-$VERSION.tar.gz" "steel-shield-$VERSION.tar.gz.sha256" "steel-shield-scamcheck-thunderbird-$VERSION.xpi"

@@ -4,7 +4,9 @@
 
 - Scam checker (opt-in): `steel-shield-scamcheck` says whether an email or
   message is a scam, with the reasons, from fixed rules and offline; **Check a
-  message** in the app, after **Add it** on the Scam checker card.
+  message** in the app, after **Add it** on the Scam checker card. The same
+  rules as a Thunderbird add-on, **Is this a scam?**, built as an .xpi with
+  every release and added to Thunderbird with one click from the app.
 - Every merge to main is a numbered release (like Steel OS: 0.1.0, 0.1.1 ... 0.1.9, 0.2.0),
   published on GitHub with a source archive. VERSION now holds the starting
   point (major.minor).

@@ -61,6 +61,12 @@ requests for gift cards, codes or passwords. Fixed rules, no AI, offline;
 when online each link's domain is looked up on Quad9. In the app: **Add it**
 on the Scam checker card, then **Check a message**. Tests: `tests/scamcheck/`.
 
+**Thunderbird:** `thunderbird/` is a MailExtension with an **Is this a scam?**
+button on every email, using the same rules (`thunderbird/scamcheck.js`,
+checked against the same samples). `make xpi` builds it; the app's **Add the
+button to Thunderbird** copies it into Thunderbird's profile; or install it
+from Add-ons and Themes, *Install Add-on From File*.
+
 ## Versions and releases
 
 Every change merged to `main` is a numbered release, like Steel OS: 0.1.0,
