@@ -606,6 +606,8 @@ class Window(QMainWindow):
     def card_action(self, key, kind, on):
         if key in ("defs", "updater") and kind == "warn":
             return button("Fix now", "warn", True, self.fix_now)
+        if key == "defs":   # like Norton's LiveUpdate: check for new definitions now
+            return button("Check now", None, True, self.fix_now)
         if key == "downloads":
             return button("Turn off" if on else "Turn on", None, True, lambda: self.toggle("downloads", not on))
         if key == "guard":
@@ -654,7 +656,7 @@ class Window(QMainWindow):
     def fix_now(self):
         if self.busy:
             return
-        self.start_busy("fix", "Fixing", "Getting protection up to date…",
+        self.start_busy("fix", "Updating", "Getting the newest virus definitions…",
                         "Downloading the newest virus definitions and starting the updater.", False)
         self.scanline.setText("Downloading virus definitions…")
         if DEMO:
