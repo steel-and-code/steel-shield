@@ -1,0 +1,7 @@
+From: "PayPal Service" <service@paypa1-secure.com>
+To: you@example.com
+Subject: Your account has been limited
+Content-Type: text/html
+
+<p>We noticed unusual activity. Verify your account within 24 hours or it will be suspended.</p>
+<p><a href="http://paypa1-secure.com/verify">Verify now</a></p>

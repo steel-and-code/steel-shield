@@ -1,0 +1,6 @@
+From: "PayPal" <service@paypal.com>
+To: you@example.com
+Subject: You sent a payment
+Content-Type: text/html
+
+<p>You sent $12.00 to Coffee Corner. <a href="https://www.paypal.com/activity">View details</a></p>

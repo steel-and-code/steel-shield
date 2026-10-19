@@ -1,0 +1,16 @@
+From: "Accounts" <billing@invoices-online.net>
+To: you@example.com
+Subject: Invoice attached, action required
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+Please open the attached invoice immediately.
+--B
+Content-Type: application/octet-stream; name="invoice_4421.pdf.exe"
+Content-Disposition: attachment; filename="invoice_4421.pdf.exe"
+
+AAAA
+--B--

@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install ClamAV and tools
-        run: dnf install -y clamav inotify-tools libnotify make findutils which
+        run: dnf install -y clamav inotify-tools libnotify make findutils which python3
       - name: Syntax check
         run: bash -n bin/steel-shield && bash -n tests/selftest.sh
       - name: Detection and quarantine test

@@ -1,0 +1,7 @@
+From: "Microsoft Account Team" <no-reply@account-alerts.net>
+To: you@example.com
+Subject: Unusual sign-in activity
+Content-Type: text/html
+
+<p>Someone signed in from a new device. Review the activity now.</p>
+<p><a href="http://login-check.xyz/ms">https://account.microsoft.com/security</a></p>

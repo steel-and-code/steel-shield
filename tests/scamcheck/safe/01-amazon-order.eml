@@ -1,0 +1,6 @@
+From: "Amazon.com" <ship-confirm@amazon.com>
+To: you@example.com
+Subject: Your Amazon.com order has shipped
+Content-Type: text/html
+
+<p>Your package is on the way. <a href="https://www.amazon.com/your-orders">Track your package</a></p>

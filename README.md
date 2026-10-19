@@ -51,6 +51,30 @@ if it stops. A distribution can ship definitions with the system in
 `steel-shield-definitions` service puts them in place at boot when nothing
 newer has downloaded, so a new install is protected before it is ever online.
 
+## Scam checker (opt-in)
+
+`steel-shield-scamcheck message.eml` (or pasted text on stdin) answers
+*Looks like a scam*, *Be careful* or *Looks safe* with the reasons: a sender
+name that doesn't match its address, links to look-alike domains or to a
+different site than they say, programs as attachments, pressure wording and
+requests for gift cards, codes or passwords. Fixed rules, no AI, offline;
+when online each link's domain is looked up on Quad9. In the app: **Add it**
+on the Scam checker card, then **Check a message**. Tests: `tests/scamcheck/`.
+
+**Thunderbird:** `thunderbird/` is a MailExtension with an **Is this a scam?**
+button on every email, using the same rules (`thunderbird/scamcheck.js`,
+checked against the same samples). `make xpi` builds it; the app's **Add the
+button to Thunderbird** copies it into Thunderbird's profile; or install it
+from Add-ons and Themes, *Install Add-on From File*.
+
+**Report this scam** (app and add-on) feeds the community lists that already
+protect every browser and mail provider, instead of a list of our own: a
+forward of the message to APWG (reportphishing@apwg.org) and Netcraft
+(scam@netcraft.com), which the user sends, and Google's report form for the
+scam link. The only thing Steel Shield itself sends is a count-only ping
+(`steel-shield ping scam-reported` / `threat-caught`: one fetch of a tiny file
+on downloads.steel-os.org) for the numbers on steel-os.org/steel-shield.
+
 ## Versions and releases
 
 Every change merged to `main` is a numbered release, like Steel OS: 0.1.0,

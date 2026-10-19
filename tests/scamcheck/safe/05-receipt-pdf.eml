@@ -1,0 +1,16 @@
+From: "Store Receipts" <receipts@localbikeshop.com>
+To: you@example.com
+Subject: Your receipt
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+Thanks for your visit. Your receipt is attached.
+--B
+Content-Type: application/pdf; name="receipt-1182.pdf"
+Content-Disposition: attachment; filename="receipt-1182.pdf"
+
+%PDF-1.4
+--B--
