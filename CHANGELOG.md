@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Every merge to main is a numbered release (like Steel OS: 0.1.0, 0.1.1 ... 0.1.9, 0.2.0),
+  published on GitHub with a source archive. VERSION now holds the starting
+  point (major.minor).
 - Definitions age comes from their build date inside the file, not the file
   date (system images stamp files 1 January 1970).
 - Fix now shows download progress (which list, MB of MB) in the app; only a
