@@ -17,16 +17,22 @@ import re
 import shutil
 import subprocess
 import sys
+import platform
+import tempfile
 import threading
 import urllib.parse
+import urllib.error
+import urllib.request
+import uuid
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QIcon, QPainter, QPixmap, QTextDocument
+from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtSvgWidgets import QSvgWidget
-from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame, QGridLayout,
-                               QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
-                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+from PySide6.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QComboBox, QDialog, QFileDialog,
+                               QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QMainWindow,
+                               QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
                                QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 # ---- Where things are ------------------------------------------------------
@@ -51,6 +57,10 @@ SCAM_ON = CONF / "scamcheck-on"
 # Netcraft from the user's own mail app, and Google gets the scam link.
 REPORT_TO = "reportphishing@apwg.org,scam@netcraft.com"
 GOOGLE_REPORT = "https://safebrowsing.google.com/safebrowsing/report_phish/?url="
+# "Report a problem or idea": the same report service as Steel OS (a Bug or a
+# Story in the team's tracker, screenshot attached, no account). Works on any
+# Linux Steel Shield runs on.
+REPORT_URL = os.environ.get("STEEL_OS_REPORT_URL", "https://steel-os.org/api/report")
 # The "Is this a scam?" button for Thunderbird, packaged by the build.
 SCAM_XPI = str(Path(HELPER).parent.parent / "share" / "steel-shield" / "steel-shield-scamcheck.xpi")
 SCAMCHECK = str(Path(HELPER).with_name("steel-shield-scamcheck"))
@@ -67,6 +77,16 @@ QPushButton[rail="true"] { text-align: left; padding: 10px 14px; border: 0; bord
 QPushButton[rail="true"]:hover { background: #151A1F; color: #E9EEF2; }
 QPushButton[rail="true"]:checked { background: #1B2128; color: #FFFFFF; border-left: 3px solid #4A90D9; }
 QLabel#railfoot { color: #8E9AA6; font-size: 12px; border-top: 1px solid #262E37; padding-top: 10px; }
+QLineEdit, QComboBox { background: #0A0D10; border: 1px solid #262E37; border-radius: 8px; padding: 8px 10px; font-size: 14px; }
+QComboBox::drop-down { border: 0; width: 28px; }
+QComboBox QAbstractItemView { background: #151A1F; border: 1px solid #262E37; selection-background-color: #1B2128; }
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #3A4450; border-radius: 4px; background: #0A0D10; }
+QCheckBox::indicator:checked { background: #4A90D9; border-color: #4A90D9; }
+QCheckBox:disabled { color: #5F6B78; }
+QDialog { background: #0E1114; }
+QLabel#details { color: #8E9AA6; font-family: monospace; font-size: 12px; background: #0A0D10;
+    border: 1px solid #262E37; border-radius: 8px; padding: 8px; }
 QFrame#hero { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1B2128, stop:1 #151A1F);
     border: 1px solid #262E37; border-radius: 12px; }
 QFrame#hero[state="warn"] { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #2a1a12, stop:1 #151A1F);
@@ -146,6 +166,7 @@ ICONS = {
     "scan": '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
     "quarantine": '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
     "history": '<path d="M3 12a9 9 0 109-9 9 9 0 00-7 3.4"/><path d="M3 4v4h4M12 7v5l3 2"/>',
+    "report": '<path d="M4 21V4a1 1 0 011-1h9l1 2h5v11h-9l-1-2H5"/><path d="M4 21h0"/>',
 }
 
 
@@ -398,6 +419,147 @@ class ScanJob(QObject):
 
 
 # ---- The window -------------------------------------------------------------
+def report_details():
+    """Computer details for a report: versions only, no names, no user name, no files."""
+    rel = {}
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                rel[k] = v.strip().strip('"')
+    except OSError:
+        pass
+    ver = ""
+    for f in (Path(HELPER).parent.parent / "share" / "steel-shield" / "VERSION", Path("/usr/share/steel-shield/VERSION")):
+        try:
+            ver = f.read_text(encoding="utf-8").strip()
+            break
+        except OSError:
+            continue
+    out = [f"Steel Shield: {ver or 'built into ' + rel.get('PRETTY_NAME', 'this system')}",
+           f"System: {rel.get('PRETTY_NAME', 'unknown')}",
+           f"Kernel: {platform.release()}",
+           f"Desktop: {os.environ.get('XDG_CURRENT_DESKTOP', 'unknown')}, {os.environ.get('XDG_SESSION_TYPE', 'unknown')}"]
+    try:
+        out.append("Status: " + "; ".join(l.split("\t")[1] for l in shield("status", timeout=20).splitlines()
+                                             if l.count("\t") >= 1)[:400])
+    except Exception:  # noqa: BLE001
+        pass
+    return "\n".join(out)
+
+
+def multipart(fields, files):
+    """Encode a form the way a browser would (urllib has no helper for it)."""
+    boundary = "----SteelShield" + uuid.uuid4().hex
+    body = bytearray()
+    for name, value in fields.items():
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n").encode()
+        body += str(value).encode("utf-8") + b"\r\n"
+    for name, (filename, mime, data) in files.items():
+        body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
+                 f"Content-Type: {mime}\r\n\r\n").encode()
+        body += data + b"\r\n"
+    body += f"--{boundary}--\r\n".encode()
+    return bytes(body), f"multipart/form-data; boundary={boundary}"
+
+
+class ReportDialog(QDialog):
+    """Problem or Idea, a title, what happened, two ticks; Send files it, no account needed."""
+    finished_send = Signal(bool, str)
+
+    def __init__(self, parent, shot):
+        super().__init__(parent)
+        self.setWindowTitle("Report a problem or idea")
+        self.setMinimumWidth(560)
+        self.shot = shot
+        self.details = report_details()
+        v = QVBoxLayout(self)
+        v.setContentsMargins(24, 24, 24, 24)
+        v.setSpacing(12)
+        v.addWidget(label("Report a problem or idea", "h2"))
+        v.addWidget(label("It goes to the Steel Shield team with a reference number back. No account needed. "
+                          "Nothing is sent until you click Send.", cls="muted", wrap=True))
+        self.kind = QComboBox()
+        self.kind.addItems(["Problem", "Idea"])
+        v.addWidget(self.kind)
+        self.title = QLineEdit(placeholderText="A short title")
+        v.addWidget(self.title)
+        self.text = QPlainTextEdit(placeholderText="What happened, or what you would like. What did you click, what did you expect?")
+        self.text.setMinimumHeight(140)
+        v.addWidget(self.text)
+        self.use_shot = QCheckBox("Include the screenshot (taken when you clicked the button)")
+        self.use_shot.setChecked(shot is not None)
+        self.use_shot.setEnabled(shot is not None)
+        row = QHBoxLayout()
+        row.addWidget(self.use_shot)
+        if shot is not None:
+            row.addWidget(button("See it", small=True, slot=lambda: subprocess.Popen(["xdg-open", str(shot)],
+                                                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)))
+        row.addStretch(1)
+        v.addLayout(row)
+        self.use_details = QCheckBox("Include these computer details")
+        self.use_details.setChecked(True)
+        v.addWidget(self.use_details)
+        d = label(self.details, "details", wrap=True)
+        d.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        v.addWidget(d)
+        self.note = label("", cls="muted", wrap=True)
+        v.addWidget(self.note)
+        btns = QHBoxLayout()
+        btns.addStretch(1)
+        btns.addWidget(button("Cancel", slot=self.reject))
+        self.send = button("Send", "primary", slot=self.do_send)
+        btns.addWidget(self.send)
+        v.addLayout(btns)
+        self.finished_send.connect(self.sent)
+
+    def do_send(self):
+        title, text = self.title.text().strip(), self.text.toPlainText().strip()
+        if len(title) < 3:
+            self.note.setText(f'<span style="color:{ORANGE}">Please give it a short title.</span>')
+            return
+        if len(text) < 5:
+            self.note.setText(f'<span style="color:{ORANGE}">Please say a little more about it.</span>')
+            return
+        self.send.setEnabled(False)
+        self.note.setText("Sending…")
+        fields = {"kind": "idea" if self.kind.currentText() == "Idea" else "problem", "product": "steel-shield",
+                  "title": title, "description": text, "website": "",
+                  "details": self.details if self.use_details.isChecked() else ""}
+        files = {}
+        if self.shot is not None and self.use_shot.isChecked():
+            try:
+                files["screenshot"] = ("screenshot.png", "image/png", self.shot.read_bytes())
+            except OSError:
+                pass
+
+        def work():
+            try:
+                body, ctype = multipart(fields, files)
+                req = urllib.request.Request(REPORT_URL, data=body, headers={"Content-Type": ctype,
+                                                                             "User-Agent": "steel-shield-app"})
+                with urllib.request.urlopen(req, timeout=90) as r:
+                    ans = json.loads(r.read().decode("utf-8", "replace"))
+            except urllib.error.HTTPError as e:
+                try:
+                    ans = json.loads(e.read().decode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001
+                    ans = {"ok": False, "error": f"The report could not be sent ({e.code})."}
+            except Exception as e:  # noqa: BLE001
+                ans = {"ok": False, "error": "The report could not be sent. Check the internet connection, then click Send again."}
+            self.finished_send.emit(bool(ans.get("ok")), ans.get("key") or ans.get("error") or "")
+        threading.Thread(target=work, daemon=True).start()
+
+    def sent(self, ok, info):
+        if ok:
+            shield("log", f"REPORT sent: {info or 'thanks'}", timeout=10)
+            QMessageBox.information(self, "Steel Shield", "Thanks, it's with the team." + (f" Your reference: {info}." if info else ""))
+            self.accept()
+        else:
+            self.send.setEnabled(True)
+            self.note.setText(f'<span style="color:{ORANGE}">{html.escape(info)}</span>')
+
+
 class Window(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -434,7 +596,6 @@ class Window(QMainWindow):
             b = QPushButton("  " + name, checkable=True)
             pm = QPixmap(36, 36)
             pm.fill(Qt.GlobalColor.transparent)
-            from PySide6.QtSvg import QSvgRenderer
             QSvgRenderer(QByteArray(icon_svg(key, "#8E9AA6"))).render(QPainter(pm))
             b.setIcon(QIcon(pm))
             b.setProperty("rail", True)
@@ -443,6 +604,17 @@ class Window(QMainWindow):
             rl.addWidget(b)
             self.tabs.append(b)
         rl.addStretch(1)
+        # The same "Report a problem or idea" as the Steel OS Portal, from inside Steel Shield.
+        rb = QPushButton("  Report a problem")
+        pm = QPixmap(36, 36)
+        pm.fill(Qt.GlobalColor.transparent)
+        QSvgRenderer(QByteArray(icon_svg("report", "#8E9AA6"))).render(QPainter(pm))
+        rb.setIcon(QIcon(pm))
+        rb.setProperty("rail", True)
+        rb.setToolTip("Report a problem or idea to the Steel Shield team")
+        rb.setCursor(Qt.CursorShape.PointingHandCursor)
+        rb.clicked.connect(self.report_problem)
+        rl.addWidget(rb)
         self.railfoot = label("", "railfoot", wrap=True)
         rl.addWidget(self.railfoot)
         lay.addWidget(rail)
@@ -460,6 +632,25 @@ class Window(QMainWindow):
         self.refresh()
         self.timer = QTimer(self, interval=30000, timeout=self.refresh_if_idle)
         self.timer.start()
+
+    # -- Report a problem or idea --
+    def report_problem(self):
+        """Screenshot first (the screen as it is), then the report window."""
+        shot = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()) / "steel-shield-report.png"
+        shot.unlink(missing_ok=True)
+        if shutil.which("spectacle"):
+            try:
+                subprocess.run(["spectacle", "--background", "--nonotify", "--fullscreen", "--output", str(shot)],
+                               capture_output=True, timeout=15)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        if not shot.is_file() or shot.stat().st_size == 0:
+            screen = QApplication.primaryScreen()
+            pm = screen.grabWindow(0) if screen else QPixmap()
+            if pm.isNull() or pm.toImage().allGray() and pm.toImage().pixelColor(5, 5).value() == 0:
+                pm = self.grab()   # Wayland without spectacle: the app window only
+            pm.save(str(shot), "PNG")
+        ReportDialog(self, shot if shot.is_file() else None).exec()
 
     # -- helpers --
     def page(self, title, sub):
