@@ -31,9 +31,13 @@ jobs:
         id: v
         run: |
           set -euo pipefail
+          # VERSION is major.minor, or major.minor.start to begin at a given
+          # number (BBE: start at 0.1.9). The commit that sets VERSION is that
+          # number; every merge after it counts one up, rolling over after 9.
           major="$(cut -d. -f1 VERSION)"; minor="$(cut -d. -f2 VERSION)"
+          start="$(cut -d. -f3 VERSION)"; start="${start:-0}"
           since="$(git log -1 --first-parent --format=%H -- VERSION)"
-          n="$(git rev-list --count --first-parent "$since..HEAD")"
+          n="$(( start + $(git rev-list --count --first-parent "$since..HEAD") ))"
           version="$major.$((minor + n / 10)).$((n % 10))"
           title="$(git log -1 --first-parent --format=%b | grep -v '^Co-Authored-By' | grep -v '^\s*$' | head -1)"
           [[ -n "$title" ]] || title="$(git log -1 --format=%s)"
