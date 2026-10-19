@@ -51,6 +51,16 @@ if it stops. A distribution can ship definitions with the system in
 `steel-shield-definitions` service puts them in place at boot when nothing
 newer has downloaded, so a new install is protected before it is ever online.
 
+## Scam checker (opt-in)
+
+`steel-shield-scamcheck message.eml` (or pasted text on stdin) answers
+*Looks like a scam*, *Be careful* or *Looks safe* with the reasons: a sender
+name that doesn't match its address, links to look-alike domains or to a
+different site than they say, programs as attachments, pressure wording and
+requests for gift cards, codes or passwords. Fixed rules, no AI, offline;
+when online each link's domain is looked up on Quad9. In the app: **Add it**
+on the Scam checker card, then **Check a message**. Tests: `tests/scamcheck/`.
+
 ## Versions and releases
 
 Every change merged to `main` is a numbered release, like Steel OS: 0.1.0,

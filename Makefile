@@ -11,6 +11,7 @@ install:
 	install -D -m 0755 bin/steel-shield-system $(DESTDIR)$(PREFIX)/libexec/steel-shield-system
 	install -D -m 0755 bin/steel-shield-quarantine $(DESTDIR)$(PREFIX)/libexec/steel-shield-quarantine
 	install -D -m 0755 bin/steel-shield-app $(DESTDIR)$(PREFIX)/libexec/steel-shield-app
+	install -D -m 0755 bin/steel-shield-scamcheck $(DESTDIR)$(PREFIX)/libexec/steel-shield-scamcheck
 	install -d $(DESTDIR)$(PREFIX)/lib/systemd/system
 	install -m 0644 systemd/system/*.service systemd/system/*.timer $(DESTDIR)$(PREFIX)/lib/systemd/system/
 	install -D -m 0644 systemd/system/clamav-freshclam.service.d/steel-shield.conf $(DESTDIR)$(PREFIX)/lib/systemd/system/clamav-freshclam.service.d/steel-shield.conf
@@ -23,7 +24,7 @@ install:
 
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/steel-shield
-	rm -f $(DESTDIR)$(PREFIX)/libexec/steel-shield-guard $(DESTDIR)$(PREFIX)/libexec/steel-shield-dns $(DESTDIR)$(PREFIX)/libexec/steel-shield-extra $(DESTDIR)$(PREFIX)/libexec/steel-shield-system $(DESTDIR)$(PREFIX)/libexec/steel-shield-quarantine $(DESTDIR)$(PREFIX)/libexec/steel-shield-app
+	rm -f $(DESTDIR)$(PREFIX)/libexec/steel-shield-guard $(DESTDIR)$(PREFIX)/libexec/steel-shield-dns $(DESTDIR)$(PREFIX)/libexec/steel-shield-extra $(DESTDIR)$(PREFIX)/libexec/steel-shield-system $(DESTDIR)$(PREFIX)/libexec/steel-shield-quarantine $(DESTDIR)$(PREFIX)/libexec/steel-shield-app $(DESTDIR)$(PREFIX)/libexec/steel-shield-scamcheck
 	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/steel-shield-definitions.service $(DESTDIR)$(PREFIX)/lib/systemd/system/clamav-freshclam.service.d/steel-shield.conf
 	rm -f $(DESTDIR)$(PREFIX)/share/polkit-1/actions/org.steel-os.shield.policy
 	rm -f $(DESTDIR)$(PREFIX)/lib/systemd/system/steel-shield-extra.*
@@ -36,4 +37,4 @@ test:
 	bash tests/selftest.sh bin/steel-shield
 	bash bin/steel-shield-guard selftest
 	bash -n bin/steel-shield-dns && bash -n bin/steel-shield-extra && bash -n bin/steel-shield-system && bash -n bin/steel-shield-quarantine
-	if command -v python3 >/dev/null; then python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" bin/steel-shield-app; fi
+	if command -v python3 >/dev/null; then python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read())" bin/steel-shield-app; bash tests/scamcheck/run.sh bin/steel-shield-scamcheck; fi
