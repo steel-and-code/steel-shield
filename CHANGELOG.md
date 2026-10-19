@@ -12,6 +12,10 @@
   form for the scam link; nothing goes until the user presses Send. No list of
   our own. A count-only ping (`steel-shield ping`) feeds the "scams reported"
   and "threats caught" numbers on steel-os.org; nothing else is sent.
+- **Report a problem** at the bottom of the app's sidebar: screenshot, then
+  Problem or Idea, a title, what happened, Send. Goes to the Steel OS team's
+  report service (a Bug or a Story in their tracker, reference number back),
+  no account needed. VERSION is installed so reports say which version.
 - Every merge to main is a numbered release (like Steel OS: 0.1.0, 0.1.1 ... 0.1.9, 0.2.0),
   published on GitHub with a source archive. VERSION now holds the starting
   point (major.minor).
