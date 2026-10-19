@@ -1198,7 +1198,8 @@ class Window(QMainWindow):
             QMessageBox.warning(self, "Steel Shield", "The Thunderbird add-on isn't on this computer yet. It comes with "
                                                       "the next Steel Shield update.")
             return
-        roots = [HOME / ".var/app/org.mozilla.Thunderbird/.thunderbird", HOME / ".thunderbird",
+        roots = [HOME / ".var/app/org.mozilla.thunderbird_esr/.thunderbird",
+                 HOME / ".var/app/org.mozilla.Thunderbird/.thunderbird", HOME / ".thunderbird",
                  HOME / "snap/thunderbird/common/.thunderbird"]
         profiles = []
         for root in roots:
