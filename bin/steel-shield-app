@@ -205,6 +205,43 @@ def quarantine_items():
     return sorted(items, key=lambda i: i[0], reverse=True)
 
 
+SWITCH_NAMES = {"downloads": "Download scanning", "guard": "Behaviour watching", "firewall": "Firewall",
+                "web": "Dangerous-website blocking"}
+
+
+def plain_history(what):
+    """A history line in plain English: 'Blocked eicar.com in Downloads', not a path and a code."""
+    m = re.match(r"QUARANTINED(?: \(system\))? (.+?) \((.+?)\) as \S+$", what)
+    if m:
+        path, sig = m.groups()
+        return f"Blocked {os.path.basename(path)} in {os.path.dirname(path)}: {explain(sig)}"
+    m = re.match(r"(RESTORED|DELETED|ALLOWED)(?: \(system\))? (.+)$", what)
+    if m:
+        verb, path = m.groups()
+        name, folder = os.path.basename(path), os.path.dirname(path)
+        return {"RESTORED": f"Restored {name} to {folder}", "DELETED": f"Deleted {name} from quarantine",
+                "ALLOWED": f"Always allow {name}"}[verb]
+    m = re.match(r"COULD NOT MOVE (.+?) \((.+?)\)$", what)
+    if m:
+        return f"Couldn't move {os.path.basename(m.group(1))} to quarantine (it may be in use)"
+    m = re.match(r"SETTING (\w+) turned (on|off)$", what)
+    if m:
+        return f"{SWITCH_NAMES.get(m.group(1), m.group(1).capitalize())} turned {m.group(2)}"
+    m = re.match(r"SCAN (.+?): found (\d+)$", what)
+    if m:
+        n = int(m.group(2))
+        return f"{m.group(1)}: " + ("nothing found" if n == 0 else f"{n} threat{'s' if n != 1 else ''} found")
+    m = re.match(r"WEEKLY scan finished, found (\d+)$", what)
+    if m:
+        n = int(m.group(1))
+        return "Weekly scan of your files: " + ("nothing found" if n == 0 else f"{n} threat{'s' if n != 1 else ''} found")
+    for prefix, nice in (("FIX NOW: ", "Fix now: "), ("TEST: ", "Test: "), ("STARTUP ", "Startup "),
+                         ("WEEKLY ", "Weekly "), ("ALLOWED (skipped) ", "Skipped (always allowed): ")):
+        if what.startswith(prefix):
+            return nice + what[len(prefix):]
+    return what
+
+
 def history_rows():
     """[(when, what, result, tone)] newest first, from history.log."""
     rows = []
@@ -228,8 +265,7 @@ def history_rows():
             res, tone = "Clean", "ok"
         else:
             res, tone = "OK", "ok"
-        what = re.sub(r"^(QUARANTINED|RESTORED|DELETED|ALLOWED|COULD NOT MOVE|WEEKLY|SCAN)\b", lambda x: x.group(1).capitalize(), what)
-        rows.append((when, what, res, tone))
+        rows.append((when, plain_history(what), res, tone))
     return list(reversed(rows))
 
 
@@ -984,6 +1020,17 @@ class Window(QMainWindow):
         t.setMinimumHeight(260)
         return t
 
+    def fit_widget_column(self, t, col):
+        """Columns of pills or buttons: the table measures only text, so size this one by hand."""
+        widest = 0
+        for r in range(t.rowCount()):
+            w = t.cellWidget(r, col)
+            if w:
+                widest = max(widest, w.sizeHint().width())
+        if widest:
+            t.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed)
+            t.setColumnWidth(col, widest + 16)
+
     def fill_quarantine(self):
         items = quarantine_items()
         self.q_empty.setVisible(not items)
@@ -1003,6 +1050,7 @@ class Window(QMainWindow):
             h.addWidget(button("Delete", "warn", True, lambda _=False, i=qid, s=system, p=path: self.q_delete(i, s, p)))
             h.addWidget(button("Restore", None, True, lambda _=False, i=qid, s=system: self.q_restore(i, s)))
             t.setCellWidget(r, 3, cell)
+        self.fit_widget_column(t, 3)
         t.resizeRowsToContents()
 
     def q_delete(self, qid, system, path):
@@ -1053,6 +1101,7 @@ class Window(QMainWindow):
             h.addWidget(p)
             h.addStretch(1)
             t.setCellWidget(r, 2, wrap)
+        self.fit_widget_column(t, 2)
         t.resizeRowsToContents()
 
     def resizeEvent(self, e):
