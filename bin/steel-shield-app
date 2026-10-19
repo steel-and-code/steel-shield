@@ -11,6 +11,7 @@ Everything it changes goes through `steel-shield` subcommands and the
 always agree.
 """
 import html
+import json
 import os
 import re
 import shutil
@@ -20,11 +21,11 @@ import threading
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QObject, QProcess, Qt, QTimer, Signal
-from PySide6.QtGui import QFont, QIcon, QPainter, QPixmap
+from PySide6.QtGui import QFont, QIcon, QPainter, QPixmap, QTextDocument
 from PySide6.QtSvgWidgets import QSvgWidget
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame, QGridLayout,
                                QHBoxLayout, QHeaderView, QLabel, QMainWindow, QMessageBox,
-                               QProgressBar, QPushButton, QScrollArea, QSizePolicy,
+                               QPlainTextEdit, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
                                QStackedWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
 # ---- Where things are ------------------------------------------------------
@@ -41,6 +42,10 @@ QUAR = DATA / "quarantine"
 STATE = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "steel-shield"
 LOG = STATE / "history.log"
 SYSQ_INDEX = Path("/var/lib/steel-shield/quarantine.tsv")
+# The scam checker is an opt-in add-on (T, 2026-10-19): off until switched on.
+CONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "steel-shield"
+SCAM_ON = CONF / "scamcheck-on"
+SCAMCHECK = str(Path(HELPER).with_name("steel-shield-scamcheck"))
 DEMO = not Path(SHIELD).exists()   # no steel-shield here: show sample data (for screenshots)
 
 BLUE, ORANGE = "#4A90D9", "#F2641E"
@@ -86,6 +91,12 @@ QTableWidget { background: #0E1114; border: 1px solid #262E37; border-radius: 10
 QHeaderView::section { background: #151A1F; color: #8E9AA6; border: 0; border-bottom: 1px solid #262E37;
     padding: 8px; font-size: 12px; font-weight: 600; }
 QLabel#empty { color: #8E9AA6; border: 1px dashed #262E37; border-radius: 10px; padding: 28px; }
+QPlainTextEdit { background: #0A0D10; border: 1px solid #262E37; border-radius: 10px; padding: 10px; font-size: 14px; }
+QFrame#verdict { border-radius: 12px; border: 1px solid #262E37; background: #151A1F; }
+QFrame#verdict[tone="scam"] { border-color: #F2641E; background: #2a1a12; }
+QFrame#verdict[tone="careful"] { border-color: #C9A227; background: #262113; }
+QFrame#verdict[tone="safe"] { border-color: #4A90D9; background: #13202c; }
+QLabel#verdict-title { font-size: 22px; font-weight: 700; }
 QScrollArea, QWidget#page { border: 0; background: #0E1114; }
 QLabel#brand { font-size: 18px; font-weight: 800; letter-spacing: 1px; }
 QFrame[class="ico"] { border-radius: 8px; background: rgba(74,144,217,34); }
@@ -122,6 +133,7 @@ ICONS = {
     "sandbox": '<rect x="3" y="3" width="18" height="18" rx="3"/><path d="M9 9h6v6H9z"/>',
     "secureboot": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
     "web": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>',
+    "scamcheck": '<path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/>',
     "status": '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
     "scan": '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
     "quarantine": '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
@@ -144,6 +156,7 @@ CARDS = [
     ("sandbox", "App sandbox", "Always on", "Off"),
     ("secureboot", "Secure Boot", "On", "Off"),
     ("web", "Dangerous-website blocking", "On", "Off"),
+    ("scamcheck", "Scam checker", "On", "Off"),
 ]
 
 
@@ -409,7 +422,7 @@ class Window(QMainWindow):
         rl.addLayout(brand)
         self.tabs = []
         for i, (name, key) in enumerate([("Status", "status"), ("Scan", "scan"), ("Quarantine", "quarantine"),
-                                         ("History", "history")]):
+                                         ("History", "history"), ("Check a message", "scamcheck")]):
             b = QPushButton("  " + name, checkable=True)
             pm = QPixmap(36, 36)
             pm.fill(Qt.GlobalColor.transparent)
@@ -432,6 +445,8 @@ class Window(QMainWindow):
         self.stack.addWidget(self.build_scan())
         self.stack.addWidget(self.build_quarantine())
         self.stack.addWidget(self.build_history())
+        self.stack.addWidget(self.build_scamcheck())
+        self.tabs[4].setVisible(SCAM_ON.exists())
 
         self.show_view(0)
         self.refresh()
@@ -556,6 +571,12 @@ class Window(QMainWindow):
     def refresh(self):
         lines = status_lines()
         by_key = {k: (kind, text) for kind, text, k in lines if k}
+        by_key["scamcheck"] = (("ok", "Scam checker is on. Paste a message or open an email under Check a message, "
+                                      "on the left, to see whether it's a scam.") if SCAM_ON.exists()
+                               else ("ok", "Scam checker is off (optional). It tells you whether an email or message is a "
+                                           "scam, with the reasons, without sending it anywhere."))
+        if hasattr(self, "tabs") and len(self.tabs) > 4:
+            self.tabs[4].setVisible(SCAM_ON.exists())
         problems = [text for kind, text, _ in lines if kind == "warn"]
         defs = by_key.get("defs", ("warn", ""))
         self.railfoot.setText("Virus definitions: " + ("up to date" if defs[0] == "ok" and "built-in" not in defs[1]
@@ -673,7 +694,25 @@ class Window(QMainWindow):
             return box
         if key == "secureboot" and not on:
             return button("How to turn it on", None, True, self.secure_boot_help)
+        if key == "scamcheck":
+            return button("Turn off" if on else "Add it", None if on else "primary", True,
+                          lambda: self.toggle_scamcheck(not on))
         return None
+
+    def toggle_scamcheck(self, on):
+        CONF.mkdir(parents=True, exist_ok=True)
+        if on:
+            SCAM_ON.touch()
+            shield("log", "Scam checker added", timeout=10)
+        else:
+            try:
+                SCAM_ON.unlink()
+            except OSError:
+                pass
+            shield("log", "Scam checker turned off", timeout=10)
+        self.refresh()
+        if on:
+            self.show_view(4)
 
     def secure_boot_help(self):
         local = Path("/usr/share/steel-os/help/steel-shield.html")
@@ -1104,8 +1143,88 @@ class Window(QMainWindow):
         self.fit_widget_column(t, 2)
         t.resizeRowsToContents()
 
+    # -- Check a message (the scam checker, opt-in) --
+    def build_scamcheck(self):
+        page, v = self.page("Check a message", "Is this email or message a scam? Paste it here, or open the email "
+                                               "file. Nothing is sent anywhere; the check runs on this computer.")
+        self.scam_text = QPlainTextEdit()
+        self.scam_text.setPlaceholderText("Paste the whole message here, including who it's from if you can…")
+        self.scam_text.setMinimumHeight(180)
+        v.addWidget(self.scam_text)
+        row = QHBoxLayout()
+        row.addWidget(button("Check it", "primary", slot=self.scam_check_text))
+        row.addWidget(button("Open an email file…", None, slot=self.scam_check_file))
+        row.addWidget(button("Clear", None, slot=lambda: (self.scam_text.clear(), self.scam_result.hide())))
+        row.addStretch(1)
+        v.addLayout(row)
+        self.scam_result = QFrame(objectName="verdict")
+        rl = QVBoxLayout(self.scam_result)
+        rl.setContentsMargins(18, 16, 18, 16)
+        rl.setSpacing(6)
+        self.scam_title = label("", "verdict-title")
+        self.scam_reasons = label("", wrap=True)
+        self.scam_reasons.setTextFormat(Qt.TextFormat.RichText)
+        rl.addWidget(self.scam_title)
+        rl.addWidget(self.scam_reasons)
+        self.scam_result.hide()
+        v.addWidget(self.scam_result)
+        v.addWidget(label("How to spot a scam yourself: a link that says one site but goes to another, a sender "
+                          "name that doesn't match the address, a rush to act, a request for gift cards, codes or "
+                          "passwords. When in doubt, go to the company's website yourself instead of clicking.",
+                          cls="muted", wrap=True))
+        v.addStretch(1)
+        return page
+
+    def scam_check_text(self):
+        text = self.scam_text.toPlainText().strip()
+        if not text:
+            return
+        self.scam_run(text)
+
+    def scam_check_file(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Open an email file", str(HOME), "Email files (*.eml *.txt);;All files (*)")
+        if f:
+            try:
+                raw = Path(f).read_text(encoding="utf-8", errors="replace")
+            except OSError as e:
+                QMessageBox.warning(self, "Steel Shield", f"The file couldn't be read: {e}")
+                return
+            self.scam_text.setPlainText(raw[:20000])
+            self.scam_run(raw)
+
+    def scam_run(self, raw):
+        self.scam_result.setProperty("tone", "")
+        restyle(self.scam_result)
+        self.scam_title.setText("Checking…")
+        self.scam_reasons.setText("Looking at the sender, the links, any attachments and the wording.")
+        self.scam_result.show()
+        QApplication.processEvents()
+        try:
+            p = subprocess.run([sys.executable, SCAMCHECK, "--json", "-"], input=raw, capture_output=True,
+                               text=True, timeout=60)
+            result = json.loads(p.stdout)
+        except Exception as e:  # noqa: BLE001
+            self.scam_title.setText("The check couldn't run")
+            self.scam_reasons.setText(html.escape(str(e)))
+            return
+        tone = result.get("verdict", "safe")
+        self.scam_result.setProperty("tone", tone)
+        restyle(self.scam_result)
+        self.scam_title.setText(result.get("headline", ""))
+        marks = {"scam": f'<span style="color:{ORANGE}">■</span>', "careful": '<span style="color:#C9A227">■</span>',
+                 "info": '<span style="color:#8E9AA6">■</span>'}
+        rows = "".join(f'<div style="margin:4px 0">{marks.get(r["level"], "")}&nbsp; {html.escape(r["text"])}</div>'
+                       for r in result.get("reasons", []))
+        advice = {"scam": "Don't click any link or open any attachment in it. Delete it, or report it.",
+                  "careful": "Don't click its links. If it claims to be a company you use, go to their website or app yourself and check there.",
+                  "safe": ""}[tone]
+        self.scam_reasons.setText(rows + (f'<div style="margin-top:10px"><b>{advice}</b></div>' if advice else ""))
+        shield("log", f"SCAMCHECK: {result.get('headline', '')}", timeout=10)
+
     def resizeEvent(self, e):
         super().resizeEvent(e)
+        if getattr(self, "scam_result", None) is not None and self.scam_result.isVisible():
+            QTimer.singleShot(0, self.scam_fit)
         if hasattr(self, "cards"):
             QTimer.singleShot(0, self.refresh_if_idle)
 

@@ -1,0 +1,6 @@
+From: "USPS" <tracking@usps-delivery-notice.com>
+To: you@example.com
+Subject: Delivery attempt failed
+Content-Type: text/html
+
+<p>We could not deliver your package. Pay the redelivery fee here: <a href="http://185.23.44.9/usps">Redelivery</a></p>

@@ -1,0 +1,385 @@
+#!/usr/bin/python3
+"""Steel Shield scam checker: is this message a scam?
+
+Reads an email file (.eml) or pasted text and answers "scam", "careful" or
+"safe" with the reasons in plain English. Rules only, no AI, runs offline;
+nothing from the message is sent anywhere. (When online, each link's domain
+is also looked up on Quad9, the free service that refuses known malware and
+phishing sites; only the domain name is sent, never the message.)
+
+    steel-shield-scamcheck message.eml
+    steel-shield-scamcheck - < pasted.txt
+    steel-shield-scamcheck --json message.eml
+
+The verdict comes from these rules, never from an AI: a scam message can
+contain text written to talk an AI into calling it safe.
+"""
+import email
+import email.policy
+import html
+import json
+import re
+import sys
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+
+# Brands scammers imitate, with the domains that really belong to them.
+BRANDS = {
+    "paypal": ["paypal.com", "paypal.me"],
+    "microsoft": ["microsoft.com", "live.com", "outlook.com", "office.com", "hotmail.com", "microsoftonline.com",
+                  "msn.com", "xbox.com", "azure.com", "office365.com"],
+    "outlook": ["outlook.com", "live.com", "microsoft.com", "office.com"],
+    "apple": ["apple.com", "icloud.com", "me.com"],
+    "icloud": ["icloud.com", "apple.com"],
+    "amazon": ["amazon.com", "amazon.co.uk", "amazon.ca", "amazon.de", "amazon.fr", "amazon.es", "amazon.it",
+               "amazon.com.au", "amazon.in", "amazon.co.jp", "amazon.com.mx", "amazonaws.com", "primevideo.com"],
+    "google": ["google.com", "gmail.com", "youtube.com", "googlemail.com", "goo.gl", "withgoogle.com", "google.co.uk"],
+    "gmail": ["gmail.com", "google.com", "googlemail.com"],
+    "netflix": ["netflix.com"],
+    "facebook": ["facebook.com", "fb.com", "facebookmail.com", "meta.com", "messenger.com"],
+    "instagram": ["instagram.com", "facebook.com", "meta.com"],
+    "whatsapp": ["whatsapp.com", "whatsapp.net", "meta.com"],
+    "chase": ["chase.com", "jpmorganchase.com", "jpmorgan.com"],
+    "bankofamerica": ["bankofamerica.com", "bofa.com"],
+    "wellsfargo": ["wellsfargo.com"],
+    "citibank": ["citi.com", "citibank.com", "citigroup.com"],
+    "capitalone": ["capitalone.com"],
+    "usps": ["usps.com", "usps.gov"],
+    "ups": ["ups.com"],
+    "fedex": ["fedex.com"],
+    "dhl": ["dhl.com", "dhl.de", "dhl.co.uk"],
+    "irs": ["irs.gov"],
+    "socialsecurity": ["ssa.gov"],
+    "medicare": ["medicare.gov", "cms.gov"],
+    "steam": ["steampowered.com", "steamcommunity.com", "valvesoftware.com", "steamgames.com"],
+    "discord": ["discord.com", "discord.gg", "discordapp.com"],
+    "ebay": ["ebay.com", "ebay.co.uk", "ebay.de", "ebay.ca", "ebay.com.au"],
+    "dropbox": ["dropbox.com"],
+    "docusign": ["docusign.com", "docusign.net"],
+    "linkedin": ["linkedin.com"],
+    "walmart": ["walmart.com"],
+    "costco": ["costco.com", "costco.ca"],
+    "venmo": ["venmo.com"],
+    "zelle": ["zellepay.com", "zelle.com"],
+    "cashapp": ["cash.app", "squareup.com"],
+    "coinbase": ["coinbase.com"],
+    "binance": ["binance.com", "binance.us"],
+    "verizon": ["verizon.com", "verizonwireless.com", "vzw.com"],
+    "xfinity": ["xfinity.com", "comcast.com", "comcast.net"],
+    "comcast": ["comcast.com", "comcast.net", "xfinity.com"],
+    "spotify": ["spotify.com"],
+    "adobe": ["adobe.com"],
+    "zoom": ["zoom.us", "zoom.com"],
+    "roblox": ["roblox.com"],
+    "epicgames": ["epicgames.com", "unrealengine.com"],
+    "playstation": ["playstation.com", "sony.com", "sonyentertainmentnetwork.com"],
+    "nintendo": ["nintendo.com", "nintendo.net"],
+    "geeksquad": ["bestbuy.com", "geeksquad.com"],
+    "bestbuy": ["bestbuy.com"],
+    "norton": ["norton.com", "nortonlifelock.com", "gendigital.com"],
+    "mcafee": ["mcafee.com"],
+    "att": ["att.com", "att.net"],
+    "tmobile": ["t-mobile.com"],
+    "sparkasse": ["sparkasse.de"],
+    "steelos": ["steel-os.org", "steelandcode.com"],
+}
+FREEMAIL = {"gmail.com", "googlemail.com", "yahoo.com", "outlook.com", "hotmail.com", "live.com", "aol.com",
+            "icloud.com", "proton.me", "protonmail.com", "mail.com", "gmx.com", "gmx.de", "yandex.com", "zoho.com"}
+SHORTENERS = {"bit.ly", "tinyurl.com", "t.co", "goo.gl", "ow.ly", "is.gd", "buff.ly", "cutt.ly", "rb.gy",
+              "shorturl.at", "tiny.cc", "lnkd.in", "t.ly", "rebrand.ly"}
+DANGEROUS_EXT = {".exe", ".scr", ".bat", ".cmd", ".com", ".pif", ".msi", ".js", ".jse", ".vbs", ".vbe", ".wsf",
+                 ".ps1", ".hta", ".lnk", ".iso", ".img", ".jar", ".apk", ".dll", ".reg"}
+RISKY_EXT = {".zip", ".rar", ".7z", ".docm", ".xlsm", ".pptm", ".html", ".htm", ".svg", ".one"}
+PRESSURE = [
+    r"\burgent(ly)?\b", r"\bimmediately\b", r"within (24|48) hours", r"\baccount (has been |will be |is )?(suspended|locked|limited|closed|disabled|compromised|on hold)",
+    r"\bverify (your|the) (account|identity|information|payment)", r"\bconfirm your (account|identity|password|payment)",
+    r"\bunusual (sign[- ]?in|activity|login)", r"\bsuspicious (activity|sign[- ]?in|login)", r"\bpassword (has )?expire",
+    r"\bfinal (notice|warning|reminder)", r"\blast (chance|warning)", r"\baction required\b", r"\bfailed to deliver",
+    r"\bdelivery (attempt|failed|could not)", r"\bredelivery\b", r"\bcustoms (fee|duty|charge)", r"\brefund\b",
+    r"\bprize\b", r"\byou('ve| have) (been selected|won)", r"\blottery\b", r"\binheritance\b", r"\bbeneficiary\b",
+    r"\bdo not (share|tell)", r"\bkeep this (confidential|secret)",
+]
+MONEY = [r"\bgift ?cards?\b", r"\bitunes card", r"\bgoogle play card", r"\bbitcoin\b", r"\bcrypto(currency)?\b",
+         r"\bwire transfer\b", r"\bwestern union\b", r"\bmoneygram\b", r"\bzelle\b", r"\bvenmo\b", r"\bcash ?app\b",
+         r"\bpay(ment)? (now|today|immediately)", r"\bprocessing fee\b", r"\b(bank|card) details\b",
+         r"\bsocial security number\b", r"\bssn\b", r"\bdate of birth\b", r"\bmother'?s maiden name\b"]
+CONFUSABLE = str.maketrans({"0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "7": "t", "8": "b", "9": "g",
+                            "$": "s", "@": "a", "|": "l", "!": "i"})
+URL_RE = re.compile(r"(?i)\b((?:https?://|www\.)[^\s<>\"')\]]+)")
+DOMAIN_IN_TEXT = re.compile(r"(?i)\b([a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|co\.uk|gov|edu|io|me|app|us|ca|de|fr|es|it|au|nl))\b")
+TWO_LEVEL = {"co.uk", "org.uk", "ac.uk", "gov.uk", "com.au", "net.au", "co.nz", "co.jp", "com.br", "com.mx", "co.in",
+             "com.ar", "co.za", "com.sg", "com.hk", "com.tr"}
+
+
+def registrable(host):
+    """paypal.com from secure.paypal.com; amazon.co.uk from www.amazon.co.uk."""
+    host = (host or "").lower().strip(".")
+    if host.startswith("xn--") or ".xn--" in host:
+        try:
+            host = host.encode("ascii").decode("idna")
+        except Exception:  # noqa: BLE001
+            pass
+    parts = host.split(".")
+    if len(parts) >= 3 and ".".join(parts[-2:]) in TWO_LEVEL:
+        return ".".join(parts[-3:])
+    return ".".join(parts[-2:]) if len(parts) >= 2 else host
+
+
+def core(domain):
+    """The part before the ending, with look-alike characters normalised: paypa1 -> paypal."""
+    d = registrable(domain)
+    name = d.split(".")[0] if "." in d else d
+    name = name.translate(CONFUSABLE).replace("rn", "m").replace("vv", "w").replace("cl", "d") if False else name.translate(CONFUSABLE)
+    return name.replace("-", "").replace("_", "")
+
+
+def close(a, b):
+    """Within one typo of each other (one letter added, removed or changed)."""
+    if a == b:
+        return True
+    if abs(len(a) - len(b)) > 1:
+        return False
+    if len(a) == len(b):
+        return sum(x != y for x, y in zip(a, b)) == 1
+    s, l = (a, b) if len(a) < len(b) else (b, a)
+    i = 0
+    while i < len(s) and s[i] == l[i]:
+        i += 1
+    return s[i:] == l[i + 1:]
+
+
+def imitated_brand(domain):
+    """The brand this domain pretends to be, or None if it is the brand's own domain or unrelated."""
+    d = registrable(domain)
+    if not d or "." not in d:
+        return None
+    for brand, legit in BRANDS.items():
+        if d in legit or any(d.endswith("." + x) for x in legit):
+            return None
+    c = core(d)
+    for brand, legit in BRANDS.items():
+        if brand in c or close(c, brand) or (brand.replace("rn", "m") in c.replace("rn", "m")):
+            return brand
+    return None
+
+
+class Links(HTMLParser):
+    """Links in HTML: (where it goes, what it says)."""
+    def __init__(self):
+        super().__init__()
+        self.links, self._href, self._text = [], None, []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            self._href = dict(attrs).get("href", "")
+            self._text = []
+
+    def handle_data(self, data):
+        if self._href is not None:
+            self._text.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._href is not None:
+            self.links.append((self._href.strip(), " ".join("".join(self._text).split())))
+            self._href = None
+
+
+def host_of(url):
+    u = url if re.match(r"(?i)^[a-z][a-z0-9+.-]*://", url) else "http://" + url
+    try:
+        return (urllib.parse.urlsplit(u).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def quad9_blocks(domain, timeout=3):
+    """True when Quad9 refuses this domain (known malware or phishing). None when offline."""
+    try:
+        q = urllib.parse.urlencode({"name": domain, "type": "A"})
+        req = urllib.request.Request("https://dns.quad9.net:5053/dns-query?" + q, headers={"accept": "application/dns-json"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.load(r)
+        # Quad9 answers NXDOMAIN (status 3) with no authority section for a blocked name.
+        return data.get("Status") == 3 and not data.get("Authority")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def parse(raw):
+    """Headers, text, html links and attachment names from an .eml or pasted text."""
+    msg = None
+    if re.match(r"(?is)^\s*(from|to|subject|received|return-path|date|message-id|mime-version|content-type):", raw):
+        try:
+            msg = email.message_from_string(raw, policy=email.policy.default)
+        except Exception:  # noqa: BLE001
+            msg = None
+    out = {"from_name": "", "from_addr": "", "reply_to": "", "subject": "", "text": "", "links": [], "attachments": []}
+    if msg is None or not (msg.get("from") or msg.get("subject")):
+        out["text"] = raw
+        for m in URL_RE.finditer(raw):
+            out["links"].append((m.group(1), ""))
+        return out
+    frm = msg.get("from", "")
+    name, addr = email.utils.parseaddr(str(frm))
+    out["from_name"], out["from_addr"] = name, addr.lower()
+    out["reply_to"] = email.utils.parseaddr(str(msg.get("reply-to", "")))[1].lower()
+    out["subject"] = str(msg.get("subject", ""))
+    texts, htmls = [], []
+    for part in msg.walk():
+        ctype = part.get_content_type()
+        fname = part.get_filename()
+        if fname:
+            out["attachments"].append(fname)
+            continue
+        if ctype == "text/plain":
+            try:
+                texts.append(part.get_content())
+            except Exception:  # noqa: BLE001
+                pass
+        elif ctype == "text/html":
+            try:
+                htmls.append(part.get_content())
+            except Exception:  # noqa: BLE001
+                pass
+    for h in htmls:
+        p = Links()
+        try:
+            p.feed(h)
+        except Exception:  # noqa: BLE001
+            pass
+        out["links"].extend(p.links)
+        texts.append(html.unescape(re.sub(r"<[^>]+>", " ", h)))
+    out["text"] = "\n".join(texts)
+    for m in URL_RE.finditer(out["text"]):
+        if not any(m.group(1) == l[0] for l in out["links"]):
+            out["links"].append((m.group(1), ""))
+    return out
+
+
+def check(raw, online=True):
+    m = parse(raw)
+    reasons = []          # (level, text): level is scam, careful or info
+    text_l = (m["subject"] + "\n" + m["text"]).lower()
+
+    def add(level, text):
+        if (level, text) not in reasons:
+            reasons.append((level, text))
+
+    # The sender.
+    from_dom = registrable(m["from_addr"].split("@")[-1]) if "@" in m["from_addr"] else ""
+    if m["from_name"]:
+        name_core = re.sub(r"[^a-z]", "", m["from_name"].lower().translate(CONFUSABLE))
+        for brand, legit in BRANDS.items():
+            if brand in name_core and from_dom and from_dom not in legit and not any(from_dom.endswith("." + x) for x in legit):
+                if from_dom in FREEMAIL:
+                    add("scam", f'Sent as "{m["from_name"]}" from a free {from_dom} address. {brand.capitalize()} would write from its own domain.')
+                else:
+                    add("scam", f'Sent as "{m["from_name"]}" but from {from_dom}, which is not {brand.capitalize()}\'s own domain.')
+                break
+    if m["from_addr"]:
+        b = imitated_brand(from_dom)
+        if b:
+            add("scam", f"The sender's domain {from_dom} looks like {b.capitalize()} but isn't.")
+    if m["reply_to"] and "@" in m["reply_to"] and from_dom:
+        rt_dom = registrable(m["reply_to"].split("@")[-1])
+        if rt_dom != from_dom:
+            add("careful", f"Replies would go to {rt_dom}, a different address from the sender ({from_dom}).")
+
+    # The links.
+    seen = set()
+    for href, label in m["links"]:
+        if href.lower().startswith(("mailto:", "tel:")) or not href:
+            continue
+        host = host_of(href)
+        if not host:
+            continue
+        dom = registrable(host)
+        key = (dom, label)
+        if key in seen:
+            continue
+        seen.add(key)
+        if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
+            add("scam", f"A link goes to a bare numeric address ({host}) instead of a website name.")
+            continue
+        if host.startswith("xn--") or ".xn--" in host:
+            add("scam", f"A link uses look-alike foreign characters in its address ({registrable(host)}).")
+        b = imitated_brand(dom)
+        if b:
+            add("scam", f"A link goes to {dom}, which looks like {b.capitalize()} but isn't.")
+        if dom in SHORTENERS:
+            add("careful", f"A link is shortened ({dom}), so you can't see where it really goes.")
+        shown = DOMAIN_IN_TEXT.search(label or "")
+        if shown and registrable(host_of(shown.group(1))) != dom:
+            add("scam", f'A link says "{shown.group(1)}" but really goes to {dom}.')
+        if "@" in host_of(href) or re.search(r"https?://[^/]*@", href):
+            add("scam", "A link hides its real destination behind an @ sign.")
+        if online:
+            blocked = quad9_blocks(dom)
+            if blocked:
+                add("scam", f"The site {dom} is on Quad9's list of known malware and phishing sites.")
+    link_count = len(seen)
+
+    # Attachments.
+    for name in m["attachments"]:
+        low = name.lower()
+        ext = "." + low.rsplit(".", 1)[-1] if "." in low else ""
+        if ext in DANGEROUS_EXT:
+            add("scam", f'The attachment "{name}" is a program, not a document. Don\'t open it.')
+        elif ext in RISKY_EXT:
+            add("careful", f'The attachment "{name}" can hide a program. Only open it if you were expecting it.')
+        if re.search(r"\.(pdf|doc|docx|xls|xlsx|jpg|png|txt)\.[a-z]{2,4}$", low):
+            add("scam", f'The attachment "{name}" pretends to be a document with a second, hidden file type.')
+
+    # The words.
+    pressure = [p for p in PRESSURE if re.search(p, text_l)]
+    money = [p for p in MONEY if re.search(p, text_l)]
+    if pressure and (link_count or m["attachments"]):
+        add("careful", "It pushes you to act fast (" + ", ".join(sorted({re.search(p, text_l).group(0) for p in pressure})[:3]) + ") and gives you something to click or open. Real companies don't rush you.")
+    elif pressure:
+        add("info", "It uses pressure words (" + ", ".join(sorted({re.search(p, text_l).group(0) for p in pressure})[:3]) + ").")
+    if money:
+        add("careful" if not pressure else "scam", "It asks for money or private details (" + ", ".join(sorted({re.search(p, text_l).group(0) for p in money})[:3]) + "). No real company asks for gift cards, crypto or your password by message.")
+    if re.search(r"\b(password|passcode|pin|one[- ]time code|verification code|2fa code)\b", text_l) and re.search(r"\b(enter|send|reply with|provide|confirm|type)\b", text_l):
+        add("scam", "It asks you to send or enter a password or code. Nobody legitimate asks for those by message.")
+
+    levels = {l for l, _ in reasons}
+    verdict = "scam" if "scam" in levels else "careful" if "careful" in levels else "safe"
+    if verdict == "safe":
+        reasons.append(("info", "No scam signs found: the sender, links and wording look ordinary. Still, only click links you expected."
+                        if (m["from_addr"] or link_count) else "No scam signs found in this text."))
+    return {
+        "verdict": verdict,
+        "headline": {"scam": "Looks like a scam", "careful": "Be careful", "safe": "Looks safe"}[verdict],
+        "reasons": [{"level": l, "text": t} for l, t in reasons],
+        "from": m["from_addr"], "from_name": m["from_name"], "subject": m["subject"],
+        "links": sorted({registrable(host_of(h)) for h, _ in m["links"] if host_of(h)}),
+        "attachments": m["attachments"],
+    }
+
+
+def main():
+    for stream in (sys.stdout, sys.stderr):   # look-alike foreign letters in a reason must never crash the output
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:  # noqa: BLE001
+            pass
+    args = sys.argv[1:]
+    as_json = "--json" in args
+    offline = "--offline" in args
+    files = [a for a in args if not a.startswith("--")]
+    src = files[0] if files else "-"
+    raw = sys.stdin.read() if src == "-" else open(src, "r", encoding="utf-8", errors="replace").read()
+    result = check(raw, online=not offline)
+    if as_json:
+        print(json.dumps(result, indent=1))
+    else:
+        print(result["headline"])
+        for r in result["reasons"]:
+            mark = {"scam": "!!", "careful": "! ", "info": "  "}[r["level"]]
+            print(f" {mark} {r['text']}")
+    sys.exit({"scam": 2, "careful": 1, "safe": 0}[result["verdict"]])
+
+
+if __name__ == "__main__":
+    main()

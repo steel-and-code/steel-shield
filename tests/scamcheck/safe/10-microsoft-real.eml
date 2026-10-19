@@ -1,0 +1,6 @@
+From: "Microsoft account team" <account-security-noreply@accountprotection.microsoft.com>
+To: you@example.com
+Subject: Your Microsoft account was signed in to
+Content-Type: text/html
+
+<p>We noticed a sign-in from Phoenix, United States. If this was you, no action is needed. <a href="https://account.microsoft.com/activity">Review activity</a></p>
