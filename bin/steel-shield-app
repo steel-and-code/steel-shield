@@ -881,6 +881,9 @@ class Window(QMainWindow):
             ("Scan a folder or drive", "Pick a folder, or a USB drive, to check on its own.", "Choose a folder…",
              self.pick_scan),
             ("Scan a file", "Check one file, for example something you were sent.", "Choose a file…", self.pick_file),
+            ("Test Steel Shield", "Puts the harmless EICAR test file, which every antivirus treats as a virus, in "
+                                  "your Downloads folder. Steel Shield should catch it within seconds.",
+             "Run the test", self.self_test),
         ]
         for i, (title, text, act, slot) in enumerate(types):
             f = QFrame(objectName="scantype")
@@ -900,6 +903,60 @@ class Window(QMainWindow):
         v.addLayout(grid)
         v.addStretch(1)
         return page
+
+    # -- Test Steel Shield (T, 2026-10-19) --
+    # EICAR: 68 harmless characters every antivirus agrees to treat as a
+    # virus. Written to Downloads, where download scanning should catch it.
+    EICAR = "X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
+
+    def self_test(self):
+        if self.busy:
+            return
+        out = run("xdg-user-dir", "DOWNLOAD", timeout=5)[1].strip()
+        downloads = Path(out if out and out != str(HOME) else HOME / "Downloads")
+        downloads.mkdir(parents=True, exist_ok=True)
+        self.test_path = downloads / "steel-shield-test.com"
+        try:
+            self.test_path.write_text(self.EICAR)
+        except OSError as e:
+            QMessageBox.warning(self, "Steel Shield", f"The test file couldn't be written: {e}")
+            return
+        self.test_ticks = 0
+        self.start_busy("test", "Test", "Testing Steel Shield…",
+                        "The harmless test file is in your Downloads folder. Download scanning should catch it "
+                        "within a few seconds.", False)
+        self.scanline.setText(str(self.test_path))
+        self.test_timer = QTimer(self, interval=1000, timeout=self.self_test_tick)
+        self.test_timer.start()
+
+    def self_test_tick(self):
+        self.test_ticks += 1
+        caught = not self.test_path.exists()
+        if not caught and self.test_ticks < 20:
+            self.scanstats.setText(f"Waiting… {self.test_ticks} s")
+            return
+        self.test_timer.stop()
+        if caught:
+            self.end_busy(("ok", f"Steel Shield caught the test file in {self.test_ticks} seconds",
+                           "Download scanning works. The test file is in Quarantine; delete it there "
+                           "whenever you like."))
+            shield("log", f"TEST: download scanning caught the test file in {self.test_ticks} s", timeout=10)
+            return
+        # Download scanning didn't react: check the file directly.
+        shield("quarantine-scan", str(self.test_path), timeout=120)
+        if not self.test_path.exists():
+            self.end_busy(("warn", "Download scanning didn't react, but a scan caught the test file",
+                           "The virus definitions work. Check that Download scanning is On on the Status page."))
+            shield("log", "TEST: download scanning didn't react; a direct scan caught the test file", timeout=10)
+        else:
+            try:
+                self.test_path.unlink()
+            except OSError:
+                pass
+            self.end_busy(("warn", "Steel Shield didn't catch the test file",
+                           "Click Fix now or Check now on the Status page, then try again. If it still fails, "
+                           "use Report a Problem or Idea."))
+            shield("log", "TEST: the test file was not caught", timeout=10)
 
     # -- Quarantine page --
     def build_quarantine(self):
@@ -936,7 +993,8 @@ class Window(QMainWindow):
         for r, (qid, path, sig, date, system) in enumerate(items):
             name = QTableWidgetItem(f"{os.path.basename(path)}\n{os.path.dirname(path)}")
             t.setItem(r, 0, name)
-            t.setItem(r, 1, QTableWidgetItem(explain(sig).capitalize() + f"\n{sig}"))
+            what = explain(sig)   # first letter up, the rest as written (EICAR, It)
+            t.setItem(r, 1, QTableWidgetItem(what[:1].upper() + what[1:] + f"\n{sig}"))
             t.setItem(r, 2, QTableWidgetItem(date))
             cell = QWidget()
             h = QHBoxLayout(cell)
