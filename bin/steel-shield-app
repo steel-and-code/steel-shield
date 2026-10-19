@@ -738,6 +738,13 @@ class Window(QMainWindow):
         if code == 126:      # the password window was closed
             self.end_busy()
             return
+        if code == 3:        # checked within the last hour: ClamAV asks not to check more often
+            m = re.search(r"already-checked (checked|tried) (\d\d:\d\d)", out)
+            when = f" at {m.group(2)}" if m else " recently"
+            self.end_busy(("ok", "Virus definitions are up to date",
+                           f"Steel Shield checked for new ones{when}, and checks again by itself every hour. "
+                           "To be fair to the free update service, it doesn't check more often than that."))
+            return
         if code == 0:
             shield("log", "FIX NOW: virus definitions updated", timeout=10)
             self.end_busy(("ok", "Virus definitions are up to date",

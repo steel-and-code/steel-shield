@@ -411,6 +411,10 @@ fix_now() {
     kdialog --title "$APP" --icon "$ICON" --passivepopup "Downloading the newest virus definitions ..." 8
     out="$(pkexec "$SYSTEM_HELPER" update 2>&1)"; rc=$?
     if [[ $rc -eq 126 ]]; then return; fi   # password window closed
+    if [[ $rc -eq 3 ]]; then   # checked within the last hour (ClamAV asks not to check more often)
+        kdialog --title "$APP" --icon "$ICON" --msgbox "<h3>Virus definitions are up to date</h3><p>Steel Shield checked for new ones $(sed -n 's/^already-checked [a-z]* /at /p' <<< "$out"), and checks again by itself every hour. To be fair to the free update service, it doesn't check more often than that.</p>"
+        return
+    fi
     if [[ $rc -eq 0 ]]; then
         kdialog --title "$APP" --icon "$ICON" --msgbox "<h3>Virus definitions are up to date</h3><p>Steel Shield checks for new ones every hour from now on.</p>"
     else
