@@ -993,7 +993,8 @@ class Window(QMainWindow):
         for r, (qid, path, sig, date, system) in enumerate(items):
             name = QTableWidgetItem(f"{os.path.basename(path)}\n{os.path.dirname(path)}")
             t.setItem(r, 0, name)
-            t.setItem(r, 1, QTableWidgetItem(explain(sig).capitalize() + f"\n{sig}"))
+            what = explain(sig)   # first letter up, the rest as written (EICAR, It)
+            t.setItem(r, 1, QTableWidgetItem(what[:1].upper() + what[1:] + f"\n{sig}"))
             t.setItem(r, 2, QTableWidgetItem(date))
             cell = QWidget()
             h = QHBoxLayout(cell)
