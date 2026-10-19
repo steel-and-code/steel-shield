@@ -60,14 +60,44 @@ seed() {
     return 0
 }
 
+# ClamAV asks that each computer checks its mirrors at most about once an
+# hour, and puts computers that check more often on a cool-down. Check now and
+# Fix now therefore contact the mirror only if the last successful check was
+# over an hour ago and no attempt was made in the last 10 minutes (T,
+# 2026-10-18). The hourly updater (clamav-freshclam) keeps its own schedule.
+STAMPS=/var/lib/steel-shield
+too_soon() {
+    local now last_ok last_try fc
+    now=$(date +%s)
+    last_ok=$(cat "$STAMPS/last-update-ok" 2>/dev/null || echo 0)
+    fc=$(stat -c %Y "$DB/freshclam.dat" 2>/dev/null || echo 0)   # the hourly updater's own last check
+    (( fc > last_ok && fc <= now )) && last_ok=$fc
+    last_try=$(cat "$STAMPS/last-update-try" 2>/dev/null || echo 0)
+    if (( now - last_ok < 3600 )); then
+        echo "checked $(date -d "@$last_ok" '+%H:%M')"; return 0
+    fi
+    if (( now - last_try < 600 )); then
+        echo "tried $(date -d "@$last_try" '+%H:%M')"; return 0
+    fi
+    return 1
+}
+
 update() {
     seed
+    mkdir -p "$STAMPS"
+    local when
+    if [[ -s "$DB/daily.cvd" || -s "$DB/daily.cld" ]] && when="$(too_soon)"; then
+        echo "already-checked $when"
+        exit 3
+    fi
+    date +%s > "$STAMPS/last-update-try"
     systemctl stop clamav-freshclam.service 2>/dev/null
     # Progress goes straight out ("Downloading daily.cvd ... 12.3MiB/23.4MiB"),
     # so the app can show a progress bar while it downloads.
     local rc
     stdbuf -oL freshclam --foreground --show-progress 2>&1 | stdbuf -oL tr '\r' '\n' | grep --line-buffered -vE '^\s*$'
     rc=${PIPESTATUS[0]}
+    [[ $rc -eq 0 ]] && date +%s > "$STAMPS/last-update-ok"
     systemctl enable --now clamav-freshclam.service 2>/dev/null
     sleep 2
     if [[ $rc -ne 0 ]]; then
