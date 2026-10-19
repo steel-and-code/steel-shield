@@ -663,14 +663,43 @@ class Window(QMainWindow):
             return
         shield("set", "downloads", "on", timeout=60)
         shield("set", "guard", "on", timeout=60)
+        self.fix_out = ""
         self.proc = QProcess(self)
         self.proc.setProcessChannelMode(QProcess.ProcessChannelMode.MergedChannels)
+        self.proc.readyRead.connect(self.fix_progress)
         self.proc.finished.connect(self.fix_done)
         self.proc.start("pkexec", [HELPER, "update"])
 
+    def fix_progress(self):
+        """Show freshclam's progress: which file, and how much has downloaded."""
+        chunk = bytes(self.proc.readAll()).decode(errors="replace")
+        self.fix_out += chunk
+        for line in chunk.splitlines()[::-1]:
+            m = re.search(r"([\d.]+)\s*([KMG])iB\s*/\s*([\d.]+)\s*([KMG])iB", line)
+            name = re.search(r"(main|daily|bytecode)\.c[vl]d", line)
+            what = {"main": "the main list", "daily": "today's list", "bytecode": "the scripts list"}.get(
+                name.group(1) if name else "", "virus definitions")
+            if m:
+                unit = {"K": 1 / 1024, "M": 1, "G": 1024}
+                done = float(m.group(1)) * unit[m.group(2)]
+                total = float(m.group(3)) * unit[m.group(4)] or 1
+                self.bar.setRange(0, 100)
+                self.bar.setValue(int(100 * done / total))
+                self.set_logo("busy", 100 * done / total)
+                self.scanline.setText(f"Downloading {what}…")
+                self.scanstats.setText(f"<b>{done:.1f} MB</b> of {total:.1f} MB")
+                self.scanstats.setTextFormat(Qt.TextFormat.RichText)
+                return
+            if "up-to-date" in line or "up to date" in line:
+                self.scanline.setText(f"{what.capitalize()} already up to date")
+                return
+            if "Testing database" in line:
+                self.scanline.setText(f"Checking {what}…")
+                return
+
     def fix_done(self, code, _status):
-        out = bytes(self.proc.readAll()).decode(errors="replace")
-        if code in (126, 127):      # the password window was closed
+        out = self.fix_out + bytes(self.proc.readAll()).decode(errors="replace")
+        if code == 126:      # the password window was closed
             self.end_busy()
             return
         if code == 0:
@@ -766,7 +795,7 @@ class Window(QMainWindow):
 
     def full_done(self, code, _status):
         out = bytes(self.proc.readAllStandardOutput()).decode(errors="replace")
-        if code in (126, 127):
+        if code == 126:
             self.end_busy()
             return
         if code == 2 or out.startswith("error"):

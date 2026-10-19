@@ -63,11 +63,13 @@ seed() {
 update() {
     seed
     systemctl stop clamav-freshclam.service 2>/dev/null
-    local out rc
-    out="$(freshclam --foreground --show-progress=no 2>&1)"; rc=$?
+    # Progress goes straight out ("Downloading daily.cvd ... 12.3MiB/23.4MiB"),
+    # so the app can show a progress bar while it downloads.
+    local rc
+    stdbuf -oL freshclam --foreground --show-progress 2>&1 | stdbuf -oL tr '\r' '\n' | grep --line-buffered -vE '^\s*$'
+    rc=${PIPESTATUS[0]}
     systemctl enable --now clamav-freshclam.service 2>/dev/null
     sleep 2
-    echo "$out" | grep -vE '^\s*$' | tail -12
     if [[ $rc -ne 0 ]]; then
         echo "--- updater log ---"
         journalctl -u clamav-freshclam.service -b --no-pager -n 12 2>/dev/null

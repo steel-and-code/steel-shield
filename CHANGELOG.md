@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Definitions age comes from their build date inside the file, not the file
+  date (system images stamp files 1 January 1970).
+- Fix now shows download progress (which list, MB of MB) in the app; only a
+  closed password window is silent, any other failure shows the error.
 - **App window** (`steel-shield-app`, Qt for Python): Status with the shield
   and one card per protection, Scan with real progress, Quarantine and
   History. `steel-shield` opens it when PySide6 is installed and falls back to

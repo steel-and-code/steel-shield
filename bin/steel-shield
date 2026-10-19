@@ -299,7 +299,12 @@ defs_age_hours() {
     local newest dir
     dir="$(defs_dir)"
     [[ -n "$dir" ]] || { echo -1; return; }
-    newest="$(stat -c %Y "$dir"/daily.c?d "$dir"/main.c?d 2>/dev/null | sort -n | tail -1)"
+    # When Cisco built the newest definitions, read from inside the file. The
+    # file date can't be trusted: system images stamp files 1 January 1970.
+    local built
+    built="$(sigtool --info "$(ls "$dir"/daily.c?d 2>/dev/null | head -1)" 2>/dev/null | sed -n 's/^Build time: *//p' | head -1)"
+    newest="$(date -d "$built" +%s 2>/dev/null)"
+    [[ -n "$newest" ]] || newest="$(stat -c %Y "$dir"/daily.c?d "$dir"/main.c?d 2>/dev/null | sort -n | tail -1)"
     [[ -n "$newest" ]] || { echo -1; return; }
     echo $(( ($(date +%s) - newest) / 3600 ))
 }
@@ -405,7 +410,7 @@ fix_now() {
     systemctl --user restart steel-shield-guard.service 2>/dev/null || true
     kdialog --title "$APP" --icon "$ICON" --passivepopup "Downloading the newest virus definitions ..." 8
     out="$(pkexec "$SYSTEM_HELPER" update 2>&1)"; rc=$?
-    if [[ $rc -eq 126 || $rc -eq 127 ]]; then return; fi   # password window closed
+    if [[ $rc -eq 126 ]]; then return; fi   # password window closed
     if [[ $rc -eq 0 ]]; then
         kdialog --title "$APP" --icon "$ICON" --msgbox "<h3>Virus definitions are up to date</h3><p>Steel Shield checks for new ones every hour from now on.</p>"
     else
