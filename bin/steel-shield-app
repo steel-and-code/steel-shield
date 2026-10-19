@@ -137,12 +137,11 @@ def icon_svg(key, color):
 # One card per protection: title and the pill words for ok / warn.
 CARDS = [
     ("defs", "Virus definitions", "Up to date", "Needs fixing"),
-    ("updater", "Definitions updater", "Running", "Stopped"),
     ("downloads", "Download scanning", "On", "Off"),
     ("guard", "Behaviour watching", "On", "Off"),
     ("firewall", "Firewall", "On", "Off"),
     ("signed", "System updates", "Signature-checked", "Not yet"),
-    ("sandbox", "App sandbox", "On", "Off"),
+    ("sandbox", "App sandbox", "Always on", "Off"),
     ("secureboot", "Secure Boot", "On", "Off"),
     ("web", "Dangerous-website blocking", "On", "Off"),
 ]
@@ -555,6 +554,15 @@ class Window(QMainWindow):
             if w:
                 w.deleteLater()
         cols = 3 if self.stack.width() > 860 else 2 if self.stack.width() > 560 else 1
+        # The definitions and the updater that fetches them are one card: the
+        # list of known threats, and whether it stays current by itself.
+        by_key = dict(by_key)
+        dk, dt = by_key.get("defs", ("warn", "There are no virus definitions yet."))
+        uk, ut = by_key.get("updater", ("ok", ""))
+        if uk == "warn":
+            by_key["defs"] = ("warn", dt + " " + ut + " Click Fix now.")
+        elif dk == "ok" and "built-in" not in dt:
+            by_key["defs"] = ("ok", "Up to date. Steel Shield checks for new ones every hour.")
         i = 0
         for key, title, ok_word, warn_word in CARDS:
             if key not in by_key:
@@ -604,7 +612,7 @@ class Window(QMainWindow):
             i += 1
 
     def card_action(self, key, kind, on):
-        if key in ("defs", "updater") and kind == "warn":
+        if key == "defs" and kind == "warn":
             return button("Fix now", "warn", True, self.fix_now)
         if key == "defs":   # like Norton's LiveUpdate: check for new definitions now
             return button("Check now", None, True, self.fix_now)
@@ -615,9 +623,35 @@ class Window(QMainWindow):
         if key == "web":
             return button("Turn off" if on else "Block for every app", None if on else "primary", True,
                           lambda: self.toggle("web", not on))
+        if key == "firewall":
+            box = QWidget()
+            h = QHBoxLayout(box)
+            h.setContentsMargins(0, 0, 0, 0)
+            h.setSpacing(8)
+            h.addWidget(button("Turn off" if on else "Turn on", None if on else "warn", True,
+                               lambda: self.toggle("firewall", not on)))
+            if shutil.which("firewall-config"):
+                h.addWidget(button("Settings", None, True,
+                                   lambda: QProcess.startDetached("firewall-config", [])))
+            h.addStretch(1)
+            return box
+        if key == "secureboot" and not on:
+            return button("How to turn it on", None, True, self.secure_boot_help)
         return None
 
+    def secure_boot_help(self):
+        local = Path("/usr/share/steel-os/help/steel-shield.html")
+        url = local.as_uri() + "#secure-boot" if local.exists() else "https://steel-os.org/help/steel-shield#secure-boot"
+        QProcess.startDetached("xdg-open", [url])
+
     def toggle(self, what, on):
+        if what == "firewall" and not on:
+            if QMessageBox.question(self, "Turn the firewall off?",
+                                    "The firewall blocks connections to this computer that you didn't ask for. "
+                                    "Turning it off makes every app on it reachable from the network: only do "
+                                    "this to solve a specific problem, and turn it back on afterwards.\n\n"
+                                    "Steel OS asks for your password.") != QMessageBox.StandardButton.Yes:
+                return
         if what == "web" and on:
             if QMessageBox.question(self, "Block dangerous websites?",
                                     "Every app on this computer will look up websites through Quad9, a free, "

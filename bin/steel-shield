@@ -524,7 +524,14 @@ set_switch() { # set downloads|guard|web on|off
         guard:on) rm -f "$CONF/guard-off"; systemctl --user enable --now steel-shield-guard.service ;;
         guard:off) touch "$CONF/guard-off"; systemctl --user disable --now steel-shield-guard.service ;;
         web:on|web:off) pkexec "$LIBEXEC/steel-shield-dns" "$2" ;;
-        *) echo "usage: steel-shield set downloads|guard|web on|off" >&2; return 2 ;;
+        firewall:on|firewall:off) # asks for the password: it changes the whole computer
+            if command -v firewall-cmd >/dev/null 2>&1; then
+                if [[ "$2" == on ]]; then pkexec systemctl enable --now firewalld.service
+                else pkexec systemctl disable --now firewalld.service; fi
+            elif command -v ufw >/dev/null 2>&1; then
+                if [[ "$2" == on ]]; then pkexec ufw enable; else pkexec ufw disable; fi
+            else return 1; fi ;;
+        *) echo "usage: steel-shield set downloads|guard|web|firewall on|off" >&2; return 2 ;;
     esac
     log "SETTING $1 turned $2"
 }
