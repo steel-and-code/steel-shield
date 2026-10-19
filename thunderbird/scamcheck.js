@@ -174,6 +174,7 @@ async function check(m, online = true) {
 
   const seen = new Set();
   const lookups = [];
+  const badLinks = [];
   for (const [href, label] of (m.links || [])) {
     if (!href || /^(mailto|tel):/i.test(href)) continue;
     const host = hostOf(href);
@@ -182,7 +183,8 @@ async function check(m, online = true) {
     const key = dom + "\u0001" + (label || "");
     if (seen.has(key)) continue;
     seen.add(key);
-    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) { add("scam", `A link goes to a bare numeric address (${host}) instead of a website name.`); continue; }
+    const before = reasons.length;
+    if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) { add("scam", `A link goes to a bare numeric address (${host}) instead of a website name.`); badLinks.push(href); continue; }
     if (host.startsWith("xn--") || host.includes(".xn--")) add("scam", `A link uses look-alike foreign characters in its address (${dom}).`);
     const b = imitatedBrand(dom);
     if (b) add("scam", `A link goes to ${dom}, which looks like ${b[0].toUpperCase() + b.slice(1)} but isn't.`);
@@ -190,9 +192,12 @@ async function check(m, online = true) {
     const shown = (label || "").match(DOMAIN_IN_TEXT);
     if (shown && registrable(hostOf(shown[1])) !== dom) add("scam", `A link says "${shown[1]}" but really goes to ${dom}.`);
     if (/https?:\/\/[^/]*@/i.test(href)) add("scam", "A link hides its real destination behind an @ sign.");
-    if (online) lookups.push(quad9Blocks(dom).then(blocked => { if (blocked) add("scam", `The site ${dom} is on Quad9's list of known malware and phishing sites.`); }));
+    if (online) lookups.push(quad9Blocks(dom).then(blocked => { if (blocked) { add("scam", `The site ${dom} is on Quad9's list of known malware and phishing sites.`); badLinks.push(href); } }));
+    if (reasons.length > before) badLinks.push(href);
   }
   await Promise.all(lookups);
+  // The link to report to Google: a flagged one first, else the first web link.
+  const web = badLinks.concat((m.links || []).map(([h]) => h)).filter(h => /^https?:\/\//i.test(h || ""));
   const linkCount = seen.size;
 
   for (const name of (m.attachments || [])) {
@@ -214,7 +219,8 @@ async function check(m, online = true) {
   const levels = new Set(reasons.map(r => r.level));
   const verdict = levels.has("scam") ? "scam" : levels.has("careful") ? "careful" : "safe";
   if (verdict === "safe") reasons.push({ level: "info", text: (fromAddr || linkCount) ? "No scam signs found: the sender, links and wording look ordinary. Still, only click links you expected." : "No scam signs found in this text." });
-  return { verdict, headline: { scam: "Looks like a scam", careful: "Be careful", safe: "Looks safe" }[verdict], reasons };
+  return { verdict, headline: { scam: "Looks like a scam", careful: "Be careful", safe: "Looks safe" }[verdict], reasons,
+           report_url: web[0] || "" };
 }
 
 if (typeof module !== "undefined") module.exports = { check, registrable, imitatedBrand };

@@ -286,8 +286,9 @@ def check(raw, online=True):
         if rt_dom != from_dom:
             add("careful", f"Replies would go to {rt_dom}, a different address from the sender ({from_dom}).")
 
-    # The links.
+    # The links. Any link that raises a flag is one worth reporting.
     seen = set()
+    bad_links = []
     for href, label in m["links"]:
         if href.lower().startswith(("mailto:", "tel:")) or not href:
             continue
@@ -299,8 +300,10 @@ def check(raw, online=True):
         if key in seen:
             continue
         seen.add(key)
+        before = len(reasons)
         if re.fullmatch(r"\d{1,3}(\.\d{1,3}){3}", host):
             add("scam", f"A link goes to a bare numeric address ({host}) instead of a website name.")
+            bad_links.append(href)
             continue
         if host.startswith("xn--") or ".xn--" in host:
             add("scam", f"A link uses look-alike foreign characters in its address ({registrable(host)}).")
@@ -318,7 +321,10 @@ def check(raw, online=True):
             blocked = quad9_blocks(dom)
             if blocked:
                 add("scam", f"The site {dom} is on Quad9's list of known malware and phishing sites.")
+        if len(reasons) > before:
+            bad_links.append(href)
     link_count = len(seen)
+    web = [h for h in bad_links + [h for h, _ in m["links"]] if h.lower().startswith(("http://", "https://"))]
 
     # Attachments.
     for name in m["attachments"]:
@@ -354,6 +360,8 @@ def check(raw, online=True):
         "reasons": [{"level": l, "text": t} for l, t in reasons],
         "from": m["from_addr"], "from_name": m["from_name"], "subject": m["subject"],
         "links": sorted({registrable(host_of(h)) for h, _ in m["links"] if host_of(h)}),
+        # The link to report to Google: a flagged one first, else the first web link.
+        "report_url": web[0] if web else "",
         "attachments": m["attachments"],
     }
 

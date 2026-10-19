@@ -67,6 +67,14 @@ checked against the same samples). `make xpi` builds it; the app's **Add the
 button to Thunderbird** copies it into Thunderbird's profile; or install it
 from Add-ons and Themes, *Install Add-on From File*.
 
+**Report this scam** (app and add-on) feeds the community lists that already
+protect every browser and mail provider, instead of a list of our own: a
+forward of the message to APWG (reportphishing@apwg.org) and Netcraft
+(scam@netcraft.com), which the user sends, and Google's report form for the
+scam link. The only thing Steel Shield itself sends is a count-only ping
+(`steel-shield ping scam-reported` / `threat-caught`: one fetch of a tiny file
+on downloads.steel-os.org) for the numbers on steel-os.org/steel-shield.
+
 ## Versions and releases
 
 Every change merged to `main` is a numbered release, like Steel OS: 0.1.0,

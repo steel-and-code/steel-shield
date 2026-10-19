@@ -131,6 +131,14 @@ is_allowed() {
     grep -qx "$sum" "$ALLOWED"
 }
 
+# Count-only pings for the numbers on steel-os.org/steel-shield (scams reported,
+# threats caught): one request for a tiny file, nothing else. No account, no
+# id, no file name; the website's daily count of those requests is the number.
+PING_URL="https://downloads.steel-os.org/ping"
+ping_count() { # ping_count scam-reported|threat-caught
+    (curl -fsS -m 5 -o /dev/null -H "Cache-Control: no-cache" "$PING_URL/$1?t=$(date +%s)" >/dev/null 2>&1 &)
+}
+
 quarantine() { # quarantine path signature -> prints id
     local path="$1" sig="$2" id
     id="$(date +%Y%m%d-%H%M%S)-$RANDOM"
@@ -140,6 +148,7 @@ quarantine() { # quarantine path signature -> prints id
         printf 'path=%s\nsignature=%s\ndate=%s\nsha256=%s\n' "$path" "$sig" "$(date '+%Y-%m-%d %H:%M')" \
             "$(sha256sum "$QUAR/$id/file" | cut -d' ' -f1)" > "$QUAR/$id/info"
         log "QUARANTINED $path ($sig) as $id"
+        ping_count threat-caught
         echo "$id"
     else
         rmdir "$QUAR/$id" 2>/dev/null
@@ -555,6 +564,7 @@ case "${1:-dashboard}" in
     defs-dir) d="$(defs_dir)"; [[ -n "$d" ]] && echo "$d" ;;
     set) set_switch "${2:-}" "${3:-}" ;;
     log) shift; log "$*" ;;
+    ping) ping_count "${2:-}" ;;
     record-scan) shift; record_scan "$*" ;;
     fullscan) full_scan; wait ;;
     scan) shift; scan_with_report "$@" ;;

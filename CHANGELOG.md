@@ -7,6 +7,11 @@
   message** in the app, after **Add it** on the Scam checker card. The same
   rules as a Thunderbird add-on, **Is this a scam?**, built as an .xpi with
   every release and added to Thunderbird with one click from the app.
+  **Report this scam** (app and add-on): one click forwards the message to
+  APWG and Netcraft from the user's own mail app and opens Google's report
+  form for the scam link; nothing goes until the user presses Send. No list of
+  our own. A count-only ping (`steel-shield ping`) feeds the "scams reported"
+  and "threats caught" numbers on steel-os.org; nothing else is sent.
 - Every merge to main is a numbered release (like Steel OS: 0.1.0, 0.1.1 ... 0.1.9, 0.2.0),
   published on GitHub with a source archive. VERSION now holds the starting
   point (major.minor).

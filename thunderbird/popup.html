@@ -18,10 +18,18 @@
   .advice { margin-top: 12px; font-weight: 700; }
   .foot { padding: 10px 18px 14px; color: #8E9AA6; font-size: 12px; border-top: 1px solid #262E37; }
   .foot b { color: #E9EEF2; }
+  .report { padding: 12px 18px; border-top: 1px solid #262E37; }
+  .report button { font: inherit; font-weight: 700; color: #fff; background: #F2641E; border: 0; border-radius: 8px; padding: 9px 16px; cursor: pointer; }
+  .report button:disabled { background: #6b3a22; color: #c9c9c9; cursor: default; }
+  .report p { margin: 8px 0 0; color: #B8C2CC; font-size: 13px; }
 </style>
 </head>
 <body>
   <div class="box" id="box"><h1 id="title">Checking…</h1><ul id="reasons"></ul><div class="advice" id="advice"></div></div>
+  <div class="report" id="report" hidden>
+    <button id="reportbtn">Report this scam</button>
+    <p id="reportnote">Sends the email to the anti-phishing groups (APWG and Netcraft) and tells Google about the link, so it gets blocked for everyone. You press Send; nothing goes until you do.</p>
+  </div>
   <div class="foot">Checked on this computer by <b>Steel Shield</b>; nothing from the email was sent anywhere. When in doubt, don't click: go to the company's website yourself.</div>
   <script src="scamcheck.js"></script>
   <script src="popup.js"></script>
