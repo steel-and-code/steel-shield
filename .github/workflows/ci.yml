@@ -21,7 +21,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install ClamAV and tools
-        run: dnf install -y clamav inotify-tools libnotify make findutils which python3
+        # Fedora's own mirrors only: openh264 comes from a Cisco server that is
+        # sometimes unreachable and failed a check once (2026-10-20). Weak
+        # dependencies off, so no video codecs or graphics drivers are pulled in.
+        run: dnf install -y --disablerepo=fedora-cisco-openh264 --setopt=install_weak_deps=False clamav inotify-tools libnotify make findutils which python3
       - name: Syntax check
         run: bash -n bin/steel-shield && bash -n tests/selftest.sh
       - name: Detection and quarantine test
