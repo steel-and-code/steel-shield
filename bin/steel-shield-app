@@ -10,6 +10,7 @@ Everything it changes goes through `steel-shield` subcommands and the
 `steel-shield-system` helper (via pkexec), so the app and the command line
 always agree.
 """
+import hashlib
 import html
 import json
 import os
@@ -80,6 +81,17 @@ def remember_report(key, token, title, kind):
         REPORT_STORE.chmod(0o600)
     except OSError:
         pass
+# Sharing a quarantined program with the malware researchers at abuse.ch
+# (MalwareBazaar), only when the person says yes (STEEL-88). The upload goes
+# through steel-os.org, which holds the researchers' key; documents and
+# pictures are never offered, only programs, installers and scripts.
+SHARE_URL = os.environ.get("STEEL_OS_SHARE_URL", "https://steel-os.org/api/sample-share")
+SHAREABLE = {".exe", ".msi", ".dll", ".scr", ".com", ".bat", ".cmd", ".ps1", ".vbs", ".js", ".jar", ".sh", ".run",
+             ".appimage", ".deb", ".rpm", ".bin", ".elf", ".so", ".py", ".pl", ".apk", ".hta", ".lnk", ""}
+
+
+def shareable(path):
+    return Path(path).suffix.lower() in SHAREABLE
 # The "Is this a scam?" button for Thunderbird, packaged by the build.
 SCAM_XPI = str(Path(HELPER).parent.parent / "share" / "steel-shield" / "steel-shield-scamcheck.xpi")
 SCAMCHECK = str(Path(HELPER).with_name("steel-shield-scamcheck"))
@@ -482,6 +494,10 @@ def multipart(fields, files):
     return bytes(body), f"multipart/form-data; boundary={boundary}"
 
 
+class _ShareSignals(QObject):
+    done = Signal(str, str)
+
+
 class ReportDialog(QDialog):
     """Problem or Idea, a title, what happened, two ticks; Send files it, no account needed."""
     finished_send = Signal(bool, str)
@@ -683,6 +699,9 @@ class Window(QMainWindow):
         self.stack.addWidget(self.build_scamcheck())
         self.tabs[4].setVisible(SCAM_ON.exists())
 
+        self._share_signals = _ShareSignals()
+        self.share_done = self._share_signals.done
+        self.share_done.connect(self.on_share_done)
         self.show_view(0)
         self.refresh()
         self.timer = QTimer(self, interval=30000, timeout=self.refresh_if_idle)
@@ -1343,9 +1362,71 @@ class Window(QMainWindow):
             h.setSpacing(6)
             h.addWidget(button("Delete", "warn", True, lambda _=False, i=qid, s=system, p=path: self.q_delete(i, s, p)))
             h.addWidget(button("Restore", None, True, lambda _=False, i=qid, s=system: self.q_restore(i, s)))
+            if not system and shareable(path):
+                h.addWidget(button("Share with researchers", None, True,
+                                   lambda _=False, i=qid, p=path: self.q_share(i, p)))
             t.setCellWidget(r, 3, cell)
         self.fit_widget_column(t, 3)
         t.resizeRowsToContents()
+
+    def q_share(self, qid, path):
+        """Send a quarantined program to abuse.ch's MalwareBazaar, after a plain-English yes."""
+        name = os.path.basename(path)
+        f = QUAR / qid / "file"
+        if not f.is_file():
+            QMessageBox.warning(self, "Steel Shield", "That file is no longer in quarantine.")
+            return
+        if f.stat().st_size > 20_000_000:
+            QMessageBox.information(self, "Steel Shield", "This file is too large to share (20 MB at most).")
+            return
+        box = QMessageBox(QMessageBox.Icon.Question, "Share this file with the researchers?",
+                          f"<b>{html.escape(name)}</b> would be sent to abuse.ch's MalwareBazaar, the public collection "
+                          "of malware that antivirus makers and researchers learn from. Sharing it helps protect "
+                          "everyone, including people who don't use Steel OS.<br><br>"
+                          "<b>What is shared:</b> the file itself, exactly as it was caught. It becomes public. "
+                          "Nothing about you is sent: no name, no account, no email address.<br><br>"
+                          "Only share files you downloaded, never a file someone made for you or that could hold "
+                          "your own information.", parent=self)
+        yes = box.addButton("Share it", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is not yes:
+            return
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        state = {}
+
+        def work():
+            try:
+                data = f.read_bytes()
+                digest = hashlib.sha256(data).hexdigest()
+                body, ctype = multipart({"sha256": digest, "website": ""}, {"file": (name, "application/octet-stream", data)})
+                req = urllib.request.Request(SHARE_URL, data=body, headers={"Content-Type": ctype, "User-Agent": "steel-shield-app"})
+                with urllib.request.urlopen(req, timeout=180) as r:
+                    state["ans"] = json.loads(r.read().decode("utf-8", "replace"))
+            except urllib.error.HTTPError as e:
+                try:
+                    state["ans"] = json.loads(e.read().decode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001
+                    state["ans"] = {"ok": False, "error": f"The file could not be shared ({e.code})."}
+            except Exception:  # noqa: BLE001
+                state["ans"] = {"ok": False, "error": "The file could not be shared. Check the internet connection and try again."}
+            state["digest"] = state.get("digest") or ""
+            self.share_done.emit(json.dumps(state["ans"]), name)
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_share_done(self, ans_json, name):
+        QApplication.restoreOverrideCursor()
+        ans = json.loads(ans_json)
+        if ans.get("ok") and ans.get("known"):
+            QMessageBox.information(self, "Steel Shield", f"The researchers already know {name}; nothing more was sent. Thank you.")
+            shield("log", f"SHARE {name}: already known to MalwareBazaar", timeout=10)
+        elif ans.get("ok"):
+            QMessageBox.information(self, "Steel Shield", f"Thank you. {name} is now with the researchers at abuse.ch, "
+                                                          "so everyone's protection improves.")
+            shield("log", f"SHARED {name} with MalwareBazaar", timeout=10)
+            shield("ping", "sample-shared", timeout=10)
+        else:
+            QMessageBox.warning(self, "Steel Shield", ans.get("error") or "The file could not be shared.")
 
     def q_delete(self, qid, system, path):
         if QMessageBox.question(self, "Delete for good?", f"Delete {os.path.basename(path)} for good? "
