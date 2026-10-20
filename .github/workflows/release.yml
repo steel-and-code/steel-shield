@@ -46,6 +46,7 @@ jobs:
           echo "Steel Shield $version: $title"
 
       - name: Publish the release
+        id: pub
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.v.outputs.version }}
@@ -64,3 +65,35 @@ jobs:
           printf '%s\n\nInstall from source on Fedora, Debian or Ubuntu: unpack, then `sudo make install` (see README). Packages for app stores are planned.\n\n**Thunderbird users (any Linux, Windows or Mac):** the `.xpi` is the *Is this a scam?* button. In Thunderbird: menu, Add-ons and Themes, the gear, Install Add-on From File, pick it.\n' "$TITLE" > notes.md
           gh release create "v$VERSION" --title "Steel Shield $VERSION" --notes-file notes.md \
             "steel-shield-$VERSION.tar.gz" "steel-shield-$VERSION.tar.gz.sha256" "steel-shield-scamcheck-thunderbird-$VERSION.xpi"
+          echo "published=true" >> "$GITHUB_OUTPUT"
+
+      - name: Announce on Discord
+        # One post in the Steel OS server's #announcements for every release.
+        # Needs the DISCORD_ANNOUNCE_WEBHOOK secret (same webhook as the
+        # steel-os repository); without it this step says so and does nothing.
+        if: steps.pub.outputs.published == 'true'
+        env:
+          HOOK: ${{ secrets.DISCORD_ANNOUNCE_WEBHOOK }}
+          VERSION: ${{ steps.v.outputs.version }}
+          TITLE: ${{ steps.v.outputs.title }}
+        run: |
+          if [[ -z "$HOOK" ]]; then
+            echo "No DISCORD_ANNOUNCE_WEBHOOK secret; not announcing."
+            exit 0
+          fi
+          python3 - <<'PYEOF'
+          import json, os, urllib.request
+          v, title = os.environ["VERSION"], os.environ.get("TITLE", "")
+          body = (f"**Steel Shield {v}** is out."
+                  + (f"\nWhat changed: {title}" if title else "")
+                  + "\nSteel OS PCs get it with the next Steel OS update. Other Linux, and the Thunderbird button: "
+                  + f"<https://github.com/steel-and-code/steel-shield/releases/tag/v{v}>")
+          data = json.dumps({"content": body, "username": "Steel Shield", "allowed_mentions": {"parse": []}}).encode()
+          req = urllib.request.Request(os.environ["HOOK"], data=data,
+                                       headers={"Content-Type": "application/json", "User-Agent": "steel-shield-release"})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  print("Announced on Discord:", r.status)
+          except Exception as e:  # noqa: BLE001
+              print("Discord did not take the announcement:", e)
+          PYEOF
