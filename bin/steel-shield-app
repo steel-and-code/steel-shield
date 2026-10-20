@@ -492,9 +492,11 @@ class ReportDialog(QDialog):
         self.use_shot.setEnabled(shot is not None)
         row = QHBoxLayout()
         row.addWidget(self.use_shot)
-        if shot is not None:
-            row.addWidget(button("See it", small=True, slot=lambda: subprocess.Popen(["xdg-open", str(shot)],
-                                                                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)))
+        self.see_btn = button("See it", small=True, slot=self.see_picture)
+        self.see_btn.setVisible(shot is not None)
+        row.addWidget(self.see_btn)
+        # A different screenshot, or a phone photo of the screen, instead (T, 2026-10-20).
+        row.addWidget(button("Choose a picture…", small=True, slot=self.choose_picture))
         row.addStretch(1)
         v.addLayout(row)
         self.use_details = QCheckBox("Include these computer details")
@@ -513,6 +515,28 @@ class ReportDialog(QDialog):
         v.addLayout(btns)
         self.finished_send.connect(self.sent)
 
+    def see_picture(self):
+        if self.shot is not None:
+            subprocess.Popen(["xdg-open", str(self.shot)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    def choose_picture(self):
+        f, _ = QFileDialog.getOpenFileName(self, "Choose a picture", str(HOME / "Pictures"), "Pictures (*.png *.jpg *.jpeg)")
+        if not f:
+            return
+        p = Path(f)
+        if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+            self.note.setText(f'<span style="color:{ORANGE}">Please choose a PNG or JPEG picture.</span>')
+            return
+        if p.stat().st_size > 5_000_000:
+            self.note.setText(f'<span style="color:{ORANGE}">That picture is too large (5 MB at most).</span>')
+            return
+        self.shot = p
+        self.use_shot.setText(f"Include this picture: {p.name}")
+        self.use_shot.setEnabled(True)
+        self.use_shot.setChecked(True)
+        self.see_btn.setVisible(True)
+        self.note.setText("")
+
     def do_send(self):
         title, text = self.title.text().strip(), self.text.toPlainText().strip()
         if len(title) < 3:
@@ -529,7 +553,9 @@ class ReportDialog(QDialog):
         files = {}
         if self.shot is not None and self.use_shot.isChecked():
             try:
-                files["screenshot"] = ("screenshot.png", "image/png", self.shot.read_bytes())
+                jpeg = self.shot.suffix.lower() in (".jpg", ".jpeg")
+                files["screenshot"] = ("screenshot.jpg" if jpeg else "screenshot.png",
+                                       "image/jpeg" if jpeg else "image/png", self.shot.read_bytes())
             except OSError:
                 pass
 
