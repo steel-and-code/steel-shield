@@ -1,7 +1,8 @@
 # Steel Shield
 
 Open-source virus protection for Linux, powered by ClamAV. Free, no account,
-no ads, nothing sent anywhere.
+no ads, nothing sent about you (what does leave a PC, and how to turn it off:
+https://steel-os.org/privacy).
 
 Steel Shield is the virus protection built into [Steel OS](https://steel-os.org).
 This repository is its standalone home, so it can also be used on other Linux

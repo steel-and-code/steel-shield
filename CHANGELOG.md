@@ -12,6 +12,12 @@
   form for the scam link; nothing goes until the user presses Send. No list of
   our own. A count-only ping (`steel-shield ping`) feeds the "scams reported"
   and "threats caught" numbers on steel-os.org; nothing else is sent.
+- **Sharing with researchers**: a caught program, installer or script from the
+  person's own folders is sent to abuse.ch's MalwareBazaar automatically
+  (through steel-os.org, which holds the key), with a notification each time;
+  never documents, pictures or system files. A Status card turns it off
+  (`steel-shield set share off`); Quarantine's **Share with researchers**
+  shares one by hand. What leaves a PC is listed at steel-os.org/privacy.
 - **Report a problem** at the bottom of the app's sidebar: screenshot, then
   Problem or Idea, a title, what happened, Send. Goes to the Steel OS team's
   report service (a Bug or a Story in their tracker, reference number back),

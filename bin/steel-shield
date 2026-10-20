@@ -139,6 +139,44 @@ ping_count() { # ping_count scam-reported|threat-caught
     (curl -fsS -m 5 -o /dev/null -H "Cache-Control: no-cache" "$PING_URL/$1?t=$(date +%s)" >/dev/null 2>&1 &)
 }
 
+# Share a caught program with the malware researchers at abuse.ch
+# (MalwareBazaar), through steel-os.org, which holds their key. Automatic for
+# programs, installers and scripts from the person's own folders unless they
+# turned it off (CONF/share-off); never documents, pictures or archives.
+# steel-os.org/privacy describes it. (T, 2026-10-20)
+SHARE_URL="${STEEL_OS_SHARE_URL:-https://steel-os.org/api/sample-share}"
+shareable() { # shareable path
+    case "${1,,}" in
+        *.exe|*.msi|*.dll|*.scr|*.com|*.bat|*.cmd|*.ps1|*.vbs|*.js|*.jar|*.sh|*.run|*.appimage|*.deb|*.rpm|*.bin|*.elf|*.so|*.py|*.pl|*.apk|*.hta|*.lnk) return 0 ;;
+        *.*) return 1 ;;
+        *) return 0 ;;   # no extension: usually a program on Linux
+    esac
+}
+share_sample() { # share_sample id [force]
+    local id="$1" force="${2:-}" f path name sum answer
+    f="$QUAR/$id/file"; path="$(info_get "$id" path)"; name="$(basename -- "$path")"
+    [[ -f "$f" ]] || return 1
+    if [[ -z "$force" ]]; then
+        [[ -f "$CONF/share-off" ]] && return 0
+        shareable "$path" || return 0
+    fi
+    (( $(stat -c %s "$f" 2>/dev/null || echo 0) <= 20000000 )) || { log "SHARE $name: too large to share"; return 1; }
+    sum="$(sha256sum "$f" | cut -d' ' -f1)"
+    answer="$(curl -sS --max-time 180 -F "file=@$f;filename=$name;type=application/octet-stream" -F "sha256=$sum" -F "website=" "$SHARE_URL" 2>/dev/null)"
+    if [[ "$(jq -r '.ok // false' <<< "$answer" 2>/dev/null)" == true ]]; then
+        if [[ "$(jq -r '.known // false' <<< "$answer")" == true ]]; then
+            log "SHARE $name: already known to MalwareBazaar"
+        else
+            log "SHARED $name with MalwareBazaar"
+            ping_count sample-shared
+            notify low "Shared with the researchers" "$name was sent to abuse.ch's MalwareBazaar, so everyone's protection improves. Turn this off in Steel Shield, Status, Sharing with researchers."
+        fi
+        return 0
+    fi
+    log "SHARE $name failed: $(jq -r '.error // "no answer"' <<< "$answer" 2>/dev/null)"
+    return 1
+}
+
 quarantine() { # quarantine path signature -> prints id
     local path="$1" sig="$2" id
     id="$(date +%Y%m%d-%H%M%S)-$RANDOM"
@@ -149,6 +187,7 @@ quarantine() { # quarantine path signature -> prints id
             "$(sha256sum "$QUAR/$id/file" | cut -d' ' -f1)" > "$QUAR/$id/info"
         log "QUARANTINED $path ($sig) as $id"
         ping_count threat-caught
+        ( share_sample "$id" >/dev/null 2>&1 & )
         echo "$id"
     else
         rmdir "$QUAR/$id" 2>/dev/null
@@ -355,6 +394,8 @@ status_lines() { # prints "ok|warn<TAB>text<TAB>key" lines (the key is for the a
     if [[ -s "$extra" ]] && (( ($(date +%s) - $(stat -c %Y "$extra")) < 4 * 86400 )); then
         echo -e "ok\tThe extra list of new threats (abuse.ch) is up to date.\textra"
     fi
+    if [[ -f "$CONF/share-off" ]]; then echo -e "ok\tSharing caught programs with the researchers is off (optional).\tshare"
+    else echo -e "ok\tCaught programs are shared with the researchers at abuse.ch automatically, so everyone's protection improves. Never documents or pictures.\tshare"; fi
     if "$LIBEXEC/steel-shield-dns" status 2>/dev/null | grep -qx on; then
         echo -e "ok\tDangerous websites are blocked for every app (Quad9).\tweb"
     else echo -e "ok\tDangerous-website blocking is off (optional).\tweb"; fi
@@ -537,6 +578,8 @@ set_switch() { # set downloads|guard|web on|off
         guard:on) rm -f "$CONF/guard-off"; systemctl --user enable --now steel-shield-guard.service ;;
         guard:off) touch "$CONF/guard-off"; systemctl --user disable --now steel-shield-guard.service ;;
         web:on|web:off) pkexec "$LIBEXEC/steel-shield-dns" "$2" ;;
+        share:on) rm -f "$CONF/share-off" ;;
+        share:off) mkdir -p "$CONF"; touch "$CONF/share-off" ;;
         firewall:on|firewall:off) # asks for the password: it changes the whole computer
             if command -v firewall-cmd >/dev/null 2>&1; then
                 if [[ "$2" == on ]]; then pkexec systemctl enable --now firewalld.service
@@ -544,7 +587,7 @@ set_switch() { # set downloads|guard|web on|off
             elif command -v ufw >/dev/null 2>&1; then
                 if [[ "$2" == on ]]; then pkexec ufw enable; else pkexec ufw disable; fi
             else return 1; fi ;;
-        *) echo "usage: steel-shield set downloads|guard|web|firewall on|off" >&2; return 2 ;;
+        *) echo "usage: steel-shield set downloads|guard|web|firewall|share on|off" >&2; return 2 ;;
     esac
     log "SETTING $1 turned $2"
 }
@@ -565,6 +608,7 @@ case "${1:-dashboard}" in
     set) set_switch "${2:-}" "${3:-}" ;;
     log) shift; log "$*" ;;
     ping) ping_count "${2:-}" ;;
+    share-file) share_sample "$2" force ;;
     record-scan) shift; record_scan "$*" ;;
     fullscan) full_scan; wait ;;
     scan) shift; scan_with_report "$@" ;;
