@@ -193,6 +193,7 @@ ICONS = {
     "secureboot": '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 018 0v3"/>',
     "web": '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 010 18M12 3a14 14 0 000 18"/>',
     "scamcheck": '<path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/>',
+    "share": '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
     "status": '<path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/>',
     "scan": '<circle cx="11" cy="11" r="7"/><path d="M20 20l-4-4"/>',
     "quarantine": '<rect x="4" y="10" width="16" height="11" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
@@ -217,6 +218,7 @@ CARDS = [
     ("secureboot", "Secure Boot", "On", "Off"),
     ("web", "Dangerous-website blocking", "On", "Off"),
     ("scamcheck", "Scam checker", "On", "Off"),
+    ("share", "Sharing with researchers", "On", "Off"),
 ]
 
 
@@ -246,7 +248,8 @@ def status_lines():
                 ("ok", "Secure Boot is off (optional).", "secureboot"),
                 ("ok", "Apps run in their own sandbox, and system files are read-only.", "sandbox"),
                 ("ok", "Behaviour watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.", "guard"),
-                ("ok", "Dangerous-website blocking is off (optional).", "web")]
+                ("ok", "Dangerous-website blocking is off (optional).", "web"),
+                ("ok", "Caught programs are shared with the researchers at abuse.ch automatically, so everyone's protection improves. Never documents or pictures.", "share")]
     out = []
     for line in shield("status", timeout=30)[1].splitlines():
         parts = line.split("\t")
@@ -279,7 +282,7 @@ def quarantine_items():
 
 
 SWITCH_NAMES = {"downloads": "Download scanning", "guard": "Behaviour watching", "firewall": "Firewall",
-                "web": "Dangerous-website blocking"}
+                "web": "Dangerous-website blocking", "share": "Sharing with researchers"}
 
 
 def plain_history(what):
@@ -970,6 +973,8 @@ class Window(QMainWindow):
         if key == "scamcheck":
             return button("Turn off" if on else "Add it", None if on else "primary", True,
                           lambda: self.toggle_scamcheck(not on))
+        if key == "share":
+            return button("Turn off" if on else "Turn on", None, True, lambda: self.toggle("share", not on))
         return None
 
     def toggle_scamcheck(self, on):
@@ -1000,6 +1005,10 @@ class Window(QMainWindow):
                                     "this to solve a specific problem, and turn it back on afterwards.\n\n"
                                     "Steel OS asks for your password.") != QMessageBox.StandardButton.Yes:
                 return
+        if what == "share" and not on:
+            QMessageBox.information(self, "Sharing with researchers is off",
+                                    "Caught programs will stay on this PC only. You can still share one by hand from "
+                                    "Quarantine, and turn this back on here any time.")
         if what == "web" and on:
             if QMessageBox.question(self, "Block dangerous websites?",
                                     "Every app on this computer will look up websites through Quad9, a free, "
@@ -1386,7 +1395,8 @@ class Window(QMainWindow):
                           "<b>What is shared:</b> the file itself, exactly as it was caught. It becomes public. "
                           "Nothing about you is sent: no name, no account, no email address.<br><br>"
                           "Only share files you downloaded, never a file someone made for you or that could hold "
-                          "your own information.", parent=self)
+                          "your own information. (With Sharing with researchers on, Steel Shield does this by itself "
+                          "when it catches a program.)", parent=self)
         yes = box.addButton("Share it", QMessageBox.ButtonRole.AcceptRole)
         box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         box.exec()
