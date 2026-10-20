@@ -20,6 +20,7 @@ import sys
 import platform
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -61,6 +62,24 @@ GOOGLE_REPORT = "https://safebrowsing.google.com/safebrowsing/report_phish/?url=
 # Story in the team's tracker, screenshot attached, no account). Works on any
 # Linux Steel Shield runs on.
 REPORT_URL = os.environ.get("STEEL_OS_REPORT_URL", "https://steel-os.org/api/report")
+REPORT_SITE = os.environ.get("STEEL_OS_SITE", "https://steel-os.org")
+# Every report sent from this PC, with its private key (My reports in the Steel OS Portal).
+REPORT_STORE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "steel-os" / "reports.json"
+
+
+def remember_report(key, token, title, kind):
+    try:
+        REPORT_STORE.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            items = json.loads(REPORT_STORE.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            items = []
+        items.append({"key": key, "token": token, "title": title, "kind": kind,
+                      "date": time.strftime("%Y-%m-%d"), "product": "steel-shield"})
+        REPORT_STORE.write_text(json.dumps(items, indent=1), encoding="utf-8")
+        REPORT_STORE.chmod(0o600)
+    except OSError:
+        pass
 # The "Is this a scam?" button for Thunderbird, packaged by the build.
 SCAM_XPI = str(Path(HELPER).parent.parent / "share" / "steel-shield" / "steel-shield-scamcheck.xpi")
 SCAMCHECK = str(Path(HELPER).with_name("steel-shield-scamcheck"))
@@ -573,13 +592,23 @@ class ReportDialog(QDialog):
                     ans = {"ok": False, "error": f"The report could not be sent ({e.code})."}
             except Exception as e:  # noqa: BLE001
                 ans = {"ok": False, "error": "The report could not be sent. Check the internet connection, then click Send again."}
+            if ans.get("ok") and ans.get("key") and ans.get("token"):
+                remember_report(ans["key"], ans["token"], title, fields["kind"])
+                self.last_link = f"{REPORT_SITE}/my-report?key={ans['key']}&token={ans['token']}"
             self.finished_send.emit(bool(ans.get("ok")), ans.get("key") or ans.get("error") or "")
         threading.Thread(target=work, daemon=True).start()
 
     def sent(self, ok, info):
         if ok:
             shield("log", f"REPORT sent: {info or 'thanks'}", timeout=10)
-            QMessageBox.information(self, "Steel Shield", "Thanks, it's with the team." + (f" Your reference: {info}." if info else ""))
+            box = QMessageBox(QMessageBox.Icon.Information, "Steel Shield",
+                              "Thanks, it's with the team." + (f" Your reference: {info}." if info else "")
+                              + "\nFollow it and reply to the team under My reports in the Steel OS Portal, or open it now.", parent=self)
+            see = box.addButton("See it", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton("OK", QMessageBox.ButtonRole.RejectRole)
+            box.exec()
+            if box.clickedButton() is see and getattr(self, "last_link", ""):
+                subprocess.Popen(["xdg-open", self.last_link], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.accept()
         else:
             self.send.setEnabled(True)
