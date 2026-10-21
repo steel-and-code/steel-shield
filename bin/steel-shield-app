@@ -527,6 +527,10 @@ class _ShareSignals(QObject):
     done = Signal(str, str)
 
 
+class _ScamSignals(QObject):
+    done = Signal(object)
+
+
 class ReportDialog(QDialog):
     """Problem or Idea, a title, what happened, two ticks; Send files it, no account needed."""
     finished_send = Signal(bool, str)
@@ -1543,6 +1547,13 @@ class Window(QMainWindow):
         self.scam_reasons = label("", wrap=True)
         self.scam_reasons.setTextFormat(Qt.TextFormat.RichText)
         rl.addWidget(self.scam_title)
+        # A moving bar while the check runs: a few seconds on a slow PC, more
+        # with the link look-ups (T, 2026-10-21: it looked frozen without one).
+        self.scam_busy = QProgressBar(textVisible=False)
+        self.scam_busy.setRange(0, 0)
+        self.scam_busy.setFixedHeight(8)
+        self.scam_busy.hide()
+        rl.addWidget(self.scam_busy)
         rl.addWidget(self.scam_reasons)
         self.scam_report = QWidget()
         rp = QVBoxLayout(self.scam_report)
@@ -1584,41 +1595,44 @@ class Window(QMainWindow):
         return page
 
     def add_thunderbird_button(self):
-        """Copy the add-on into every Thunderbird profile on this computer (Flatpak and ordinary)."""
+        """Hand the add-on to Thunderbird itself, which asks "Add?" and installs it the normal way.
+
+        A file copied into the profile folder never showed a button on one PC
+        (STEEL report, 2026-10-21); Thunderbird opening the .xpi is the way
+        that always works, for the Flatpak and the ordinary install alike."""
         xpi = Path(SCAM_XPI)
         if not xpi.is_file():
             QMessageBox.warning(self, "Steel Shield", "The Thunderbird add-on isn't on this computer yet. It comes with "
                                                       "the next Steel Shield update.")
             return
-        roots = [HOME / ".var/app/org.mozilla.thunderbird_esr/.thunderbird",
-                 HOME / ".var/app/org.mozilla.Thunderbird/.thunderbird", HOME / ".thunderbird",
-                 HOME / "snap/thunderbird/common/.thunderbird"]
-        profiles = []
-        for root in roots:
-            if root.is_dir():
-                profiles += [d for d in root.iterdir() if d.is_dir() and (d / "prefs.js").exists()]
-        if not profiles:
-            QMessageBox.information(self, "Steel Shield", "Thunderbird hasn't been set up on this computer yet. Install it "
-                                                          "from the Steel OS Portal (Steel Apps, Everyday), open it once "
-                                                          "and set up your email, then click this again.")
+        launch = None
+        for fid in ("org.mozilla.thunderbird_esr", "org.mozilla.Thunderbird"):
+            if (HOME / ".var/app" / fid).is_dir() or run("flatpak", "info", fid, timeout=15)[0] == 0:
+                # The Flatpak can only see files under its own folder.
+                dest = HOME / ".var/app" / fid / "steel-shield-scamcheck.xpi"
+                try:
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copyfile(xpi, dest)
+                except OSError:
+                    continue
+                launch = ["flatpak", "run", fid, str(dest)]
+                break
+        if launch is None and shutil.which("thunderbird"):
+            launch = ["thunderbird", str(xpi)]
+        if launch is None:
+            QMessageBox.information(self, "Steel Shield", "Thunderbird isn't installed yet. Install it from the Steel OS "
+                                                          "Portal (Steel Apps, Everyday), then click this again.")
             return
-        done = 0
-        for prof in profiles:
-            try:
-                ext = prof / "extensions"
-                ext.mkdir(exist_ok=True)
-                shutil.copyfile(xpi, ext / "scamcheck@steel-os.org.xpi")
-                done += 1
-            except OSError:
-                pass
-        if done:
-            shield("log", "Thunderbird: Is this a scam? button added", timeout=10)
-            QMessageBox.information(self, "Steel Shield",
-                                    "Done. Close Thunderbird completely and open it again. If it asks about a new "
-                                    "add-on, click Enable. Then open any email: the Is this a scam? button is in the "
-                                    "message's toolbar.")
-        else:
-            QMessageBox.warning(self, "Steel Shield", "The add-on couldn't be copied into Thunderbird's folder.")
+        try:
+            subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Steel Shield", f"Thunderbird couldn't be opened: {e}")
+            return
+        shield("log", "Thunderbird: Is this a scam? button offered", timeout=10)
+        QMessageBox.information(self, "Steel Shield",
+                                "Thunderbird is opening and will ask to add \"Steel Shield: Is this a scam?\". Click "
+                                "Add. Then open any email: the Is this a scam? button is in the message's toolbar. "
+                                "If Thunderbird was already open, the question appears in its window.")
 
     def scam_check_text(self):
         text = self.scam_text.toPlainText().strip()
@@ -1671,15 +1685,33 @@ class Window(QMainWindow):
         restyle(self.scam_result)
         self.scam_title.setText("Checking…")
         self.scam_reasons.setText("Looking at the sender, the links, any attachments and the wording.")
+        self.scam_busy.show()
         self.scam_result.show()
-        QApplication.processEvents()
-        try:
-            p = subprocess.run([sys.executable, SCAMCHECK, "--json", "-"], input=raw, capture_output=True,
-                               text=True, timeout=60)
-            result = json.loads(p.stdout)
-        except Exception as e:  # noqa: BLE001
+        self.scam_fit()
+        if not hasattr(self, "_scam_signals"):
+            self._scam_signals = _ScamSignals()
+            self._scam_signals.done.connect(self.scam_done)
+        token = self.scam_token = object()
+
+        def work():
+            try:
+                p = subprocess.run([sys.executable, SCAMCHECK, "--json", "-"], input=raw, capture_output=True,
+                                   text=True, timeout=60)
+                result = json.loads(p.stdout)
+            except Exception as e:  # noqa: BLE001
+                result = {"error": str(e)}
+            self._scam_signals.done.emit((token, result))
+        threading.Thread(target=work, daemon=True).start()
+
+    def scam_done(self, payload):
+        token, result = payload
+        if token is not getattr(self, "scam_token", None):
+            return   # an older check finished after a newer one started
+        self.scam_busy.hide()
+        if "error" in result:
             self.scam_title.setText("The check couldn't run")
-            self.scam_reasons.setText(html.escape(str(e)))
+            self.scam_reasons.setText(html.escape(result["error"]))
+            self.scam_fit()
             return
         tone = result.get("verdict", "safe")
         self.scam_last = result
@@ -1718,6 +1750,8 @@ class Window(QMainWindow):
             lbl.setMinimumHeight(h)
             return h
         h = self.scam_title.sizeHint().height() + 6 + fit(self.scam_reasons)
+        if not self.scam_busy.isHidden():
+            h += 6 + self.scam_busy.height()
         if not self.scam_report.isHidden():
             h += 6 + 8 + self.scam_report_btn.sizeHint().height() + 6 + fit(self.scam_report_note)
         # The box is exactly as tall as its text (plus its margins), never more.
