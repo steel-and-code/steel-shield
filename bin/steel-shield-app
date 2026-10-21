@@ -125,7 +125,8 @@ QFrame#hero[state="warn"] { background: qlineargradient(x1:0, y1:0, x2:1, y2:1, 
 QLabel#kicker { color: #4A90D9; font-size: 12px; font-weight: 700; letter-spacing: 2px; }
 QLabel#kicker[state="warn"] { color: #F2641E; }
 QLabel#title { font-size: 30px; font-weight: 700; }
-QLabel[class="muted"], QLabel#text, QLabel#sub { color: #8E9AA6; }
+QLabel[class="muted"], QLabel#text, QLabel#sub, QLabel#numbers { color: #8E9AA6; }
+QLabel#numbers { font-size: 14px; padding: 2px 4px; }
 QLabel#h2 { font-size: 19px; font-weight: 700; }
 QPushButton { background: #1B2128; border: 1px solid #262E37; border-radius: 8px; padding: 8px 16px; font-weight: 600; }
 QPushButton:hover { border-color: #8E9AA6; }
@@ -233,6 +234,31 @@ def run(*args, timeout=60):
 
 def shield(*args, timeout=60):
     return run(SHIELD, *args, timeout=timeout)
+
+
+def counts():
+    """This PC's own numbers from the history log: threats caught, scams reported, programs shared."""
+    out = {"threats": 0, "scams": 0, "shared": 0}
+    if DEMO:
+        return {"threats": 3, "scams": 1, "shared": 2}
+    for line in shield("counts", timeout=10)[1].splitlines():
+        key, _, n = line.partition("\t")
+        if key in out and n.strip().isdigit():
+            out[key] = int(n)
+    return out
+
+
+def plural(n, one):
+    return f"{n} {one}" if n == 1 else f"{n} {one}s"
+
+
+def numbers_line():
+    """One line under the status: what Steel Shield has done on this PC, and where everyone's numbers are."""
+    c = counts()
+    parts = [plural(c["threats"], "threat") + " caught", plural(c["scams"], "scam") + " reported",
+             plural(c["shared"], "program") + " shared with researchers"]
+    return ("<b>On this PC:</b> " + " &nbsp;&middot;&nbsp; ".join(parts) + " &nbsp;&middot;&nbsp; "
+            f'<a href="https://steel-os.org/steel-shield" style="color:{BLUE}; text-decoration:none">Everyone\'s numbers</a>')
 
 
 def status_lines():
@@ -791,6 +817,10 @@ class Window(QMainWindow):
         col.addStretch(1)
         h.addLayout(col, 1)
         v.addWidget(self.hero)
+        self.numbers = label("", "numbers", wrap=True)
+        self.numbers.setTextFormat(Qt.TextFormat.RichText)
+        self.numbers.setOpenExternalLinks(True)
+        v.addWidget(self.numbers)
 
         head = QHBoxLayout()
         head.addWidget(label("Your protection", "h2"))
@@ -878,6 +908,7 @@ class Window(QMainWindow):
                               [button("Quick scan", "primary", slot=self.quick_scan),
                                button("Full scan", slot=self.full_scan)])
         self.fill_cards(by_key)
+        self.numbers.setText(numbers_line())
         n = len(quarantine_items())
         self.tabs[2].setText(f"  Quarantine  ({n})" if n else "  Quarantine")
 
