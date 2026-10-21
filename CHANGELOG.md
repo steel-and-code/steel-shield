@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Your numbers:** one line under the status says what Steel Shield has done
+  on this PC (threats caught, scams reported, programs shared with the
+  researchers), from the local history (`steel-shield counts`), with a link to
+  everyone's numbers on steel-os.org. Nothing is sent to count them.
+- First start of a standalone install (not on Steel OS) sends one count-only
+  ping (`ping/shield-installed`) for the "installs" number on
+  steel-os.org/steel-shield; nothing about the computer goes with it.
 - Scam checker (opt-in): `steel-shield-scamcheck` says whether an email or
   message is a scam, with the reasons, from fixed rules and offline; **Check a
   message** in the app, after **Add it** on the Scam checker card. The same

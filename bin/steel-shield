@@ -135,8 +135,30 @@ is_allowed() {
 # threats caught): one request for a tiny file, nothing else. No account, no
 # id, no file name; the website's daily count of those requests is the number.
 PING_URL="https://downloads.steel-os.org/ping"
-ping_count() { # ping_count scam-reported|threat-caught
+ping_count() { # ping_count scam-reported|threat-caught|sample-shared|shield-installed
+    [[ -n "${STEEL_SHIELD_SELFTEST:-}" ]] && return 0   # the build's own test is not a catch
     (curl -fsS -m 5 -o /dev/null -H "Cache-Control: no-cache" "$PING_URL/$1?t=$(date +%s)" >/dev/null 2>&1 &)
+}
+
+# This PC's own numbers, from the history log: threats caught (quarantined),
+# scams reported from the scam checker, programs shared with the researchers.
+# Shown at the top of the Steel Shield window; nothing is sent anywhere.
+counts() {
+    local t s p
+    t="$(grep -c ' QUARANTINED' "$LOG" 2>/dev/null)"
+    s="$(grep -c ' SCAMCHECK: reported' "$LOG" 2>/dev/null)"
+    p="$(grep -c ' SHARED .* with MalwareBazaar' "$LOG" 2>/dev/null)"
+    printf 'threats\t%s\nscams\t%s\nshared\t%s\n' "${t:-0}" "${s:-0}" "${p:-0}"
+}
+
+# One count-only ping the first time Steel Shield runs as a standalone install
+# (not on Steel OS, whose installs Fedora's weekly count already covers), for
+# the "installs" number on steel-os.org/steel-shield. The ping is a fetch of a
+# tiny file: no account, no id, nothing about the computer.
+first_start_ping() {
+    [[ -e /usr/share/steel-os ]] && return 0
+    [[ -f "$STATE/first-start" ]] && return 0
+    date '+%Y-%m-%d' > "$STATE/first-start" && ping_count shield-installed
 }
 
 # Share a caught program with the malware researchers at abuse.ch
@@ -155,6 +177,7 @@ shareable() { # shareable path
 share_sample() { # share_sample id [force]
     local id="$1" force="${2:-}" f path name sum answer
     f="$QUAR/$id/file"; path="$(info_get "$id" path)"; name="$(basename -- "$path")"
+    [[ -n "${STEEL_SHIELD_SELFTEST:-}" ]] && return 0   # never share the build's test file
     [[ -f "$f" ]] || return 1
     if [[ -z "$force" ]]; then
         [[ -f "$CONF/share-off" ]] && return 0
@@ -601,8 +624,11 @@ open_dashboard() {
     dashboard
 }
 
+first_start_ping
+
 case "${1:-dashboard}" in
     dashboard) open_dashboard ;;
+    counts) counts ;;
     menus) dashboard ;;
     defs-dir) d="$(defs_dir)"; [[ -n "$d" ]] && echo "$d" ;;
     set) set_switch "${2:-}" "${3:-}" ;;
@@ -626,8 +652,11 @@ case "${1:-dashboard}" in
         [[ -f "$2" ]] && printf '%s\t%s\n' "$2" "${3:-Behaviour.Suspicious}" | handle_detections ;;
     quarantine-scan) # behaviour watcher: scan one file now, quarantine if it is a known threat
         run_clamscan "$2" | handle_detections; record_scan "$(basename -- "$2")" ;;
-    selftest-scan) # used by the image build: scan, quarantine, restore without a desktop
+    selftest-scan) # used by the image build: scan, quarantine, restore without a desktop.
+        # Not a real catch: no count-only ping and no sharing (every image build
+        # used to add one to the website's "threats caught", 2026-10-21).
         shift
+        export STEEL_SHIELD_SELFTEST=1
         run_clamscan "$@" | while IFS=$'\t' read -r p s; do quarantine "$p" "$s"; done ;;
     *) echo "usage: steel-shield [dashboard|scan PATH...|restore ID|delete ID|status]" >&2; exit 2 ;;
 esac
