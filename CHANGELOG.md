@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Check a message runs in the background with a moving bar; the window no
+  longer freezes for the seconds a check can take.
+- **Add the button to Thunderbird** hands the add-on to Thunderbird itself,
+  which asks to add it (Flatpak and ordinary installs); the file copied into
+  the profile folder did not always show a button.
 - **Your numbers:** one line under the status says what Steel Shield has done
   on this PC (threats caught, scams reported, programs shared with the
   researchers), from the local history (`steel-shield counts`), with an **All
