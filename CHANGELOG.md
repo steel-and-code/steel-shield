@@ -7,6 +7,11 @@
 - **Add the button to Thunderbird** hands the add-on to Thunderbird itself,
   which asks to add it (Flatpak and ordinary installs); the file copied into
   the profile folder did not always show a button.
+- **Report this scam** is one click with nothing else to do: the message goes
+  to steel-os.org, which passes it straight on to Netcraft's reporting API and
+  (once the site can send email) to APWG, and keeps nothing. No mail app, no
+  Google form. The Thunderbird button does the same and marks the email as
+  junk.
 - **Your numbers:** one line under the status says what Steel Shield has done
   on this PC (threats caught, scams reported, programs shared with the
   researchers), from the local history (`steel-shield counts`), with an **All

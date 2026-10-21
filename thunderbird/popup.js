@@ -3,14 +3,13 @@
 // the computer (Quad9 look-up), never the email.
 //
 // "Report this scam" feeds the community lists that already protect every
-// browser and mail provider (no list of our own): a forward of the email,
-// attached, to APWG and Netcraft, which the user sends; and Google's report
-// form opened in the browser for the scam link.
+// browser and mail provider (no list of our own): one click sends the email
+// to steel-os.org, which passes it straight on to Netcraft's reporting API
+// and to APWG by email, and keeps nothing. Nothing else to do.
 
 "use strict";
 
-const REPORT_TO = ["reportphishing@apwg.org", "scam@netcraft.com"];
-const GOOGLE_REPORT = "https://safebrowsing.google.com/safebrowsing/report_phish/?url=";
+const REPORT_API = "https://steel-os.org/api/scam-report";
 
 async function openInBrowser(url) {
   try { await browser.windows.openDefaultBrowser(url); }
@@ -20,22 +19,36 @@ async function openInBrowser(url) {
 async function report(header, result) {
   const btn = document.getElementById("reportbtn"), note = document.getElementById("reportnote");
   btn.disabled = true;
-  const done = [];
+  note.textContent = "Sending the report…";
+  let raw = "";
   try {
-    await browser.compose.beginForward(header.id, "forwardAsAttachment",
-      { to: REPORT_TO, subject: "Phishing report: " + (header.subject || "(no subject)") });
-    done.push("A message to the anti-phishing groups is open with the email attached: press Send.");
+    raw = await browser.messages.getRaw(header.id);
+    if (raw && typeof raw !== "string") raw = await new Response(raw).text();   // newer Thunderbirds hand back a File
   } catch (e) {
-    done.push("The forward couldn't be opened: " + e);
+    raw = "";
   }
-  if (result.report_url) {
-    try { await openInBrowser(GOOGLE_REPORT + encodeURIComponent(result.report_url)); done.push("Google's report page is open in your browser: press Submit Report."); }
-    catch (e) { done.push("Google's report page couldn't be opened: " + e); }
+  const links = Array.from(new Set((raw.match(/https?:\/\/[^\s<>"')\]]+/g) || []))).slice(0, 50);
+  if (result.report_url && !links.includes(result.report_url)) links.unshift(result.report_url);
+  try {
+    const r = await fetch(REPORT_API, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: raw.slice(0, 1000000), links, subject: header.subject || "", source: "thunderbird", website: "" }),
+    });
+    const d = await r.json();
+    if (d.ok) {
+      note.textContent = d.text || "Reported. Nothing else to do.";
+      // Count-only ping for the "scams reported" number on steel-os.org: one
+      // request for a tiny file, nothing about the email or the user.
+      fetch("https://downloads.steel-os.org/ping/scam-reported?t=" + Date.now(), { cache: "no-store" }).catch(() => {});
+      try { await browser.messages.update(header.id, { junk: true }); } catch (e) { /* older Thunderbird */ }
+    } else {
+      note.textContent = "The report couldn't be sent: " + (d.error || "no answer") + " Try again in a moment.";
+      btn.disabled = false;
+    }
+  } catch (e) {
+    note.textContent = "The report couldn't be sent (no connection?): " + e + " Try again in a moment.";
+    btn.disabled = false;
   }
-  note.textContent = done.join(" ");
-  // Count-only ping for the "scams reported" number on steel-os.org: one
-  // request for a tiny file, nothing about the email or the user.
-  fetch("https://downloads.steel-os.org/ping/scam-reported?t=" + Date.now(), { cache: "no-store" }).catch(() => {});
 }
 
 function parseAddress(s) {
