@@ -62,6 +62,10 @@ SCAM_ON = CONF / "scamcheck-on"
 # by email); nothing is stored there. steel-os.org/privacy says so. (T,
 # 2026-10-21: one button, nothing else to do.)
 REPORT_API = os.environ.get("STEEL_OS_SCAM_REPORT_URL", "https://steel-os.org/api/scam-report")
+# The Anti-Phishing Working Group takes reports by email only, so after the
+# automatic report an email to them opens, written and addressed; the person
+# presses Send if they want that second copy (T, 2026-10-21).
+APWG_TO = "reportphishing@apwg.org"
 # "Report a problem or idea": the same report service as Steel OS (a Bug or a
 # Story in the team's tracker, screenshot attached, no account). Works on any
 # Linux Steel Shield runs on.
@@ -1567,9 +1571,9 @@ class Window(QMainWindow):
         row.addWidget(self.scam_report_btn)
         row.addStretch(1)
         rp.addLayout(row)
-        self.scam_report_note = label("One click sends the message to the anti-phishing groups (Netcraft and APWG), who get it "
-                                      "blocked in browsers and mail services everywhere. It goes through steel-os.org and isn't "
-                                      "kept there. Nothing else to do.",
+        self.scam_report_note = label("One click sends the message to Netcraft, who get it blocked in browsers and mail services "
+                                      "everywhere (it goes through steel-os.org and isn't kept there). An email to the Anti-Phishing "
+                                      "Working Group opens too, already written: press Send for that second copy, or close it.",
                                       cls="muted", wrap=True)
         rp.addWidget(self.scam_report_note)
         rl.addWidget(self.scam_report)
@@ -1681,7 +1685,18 @@ class Window(QMainWindow):
 
     def scam_reported(self, answer):
         if answer.get("ok"):
-            self.scam_report_note.setText(answer.get("text") or "Reported. Nothing else to do.")
+            text = answer.get("text") or "Reported."
+            if not answer.get("apwg"):
+                subject = self.scam_last.get("subject") or "(no subject)"
+                body = ("Reported with Steel Shield (https://steel-os.org/steel-shield). The message, as received:\n\n"
+                        + self.scam_raw[:4000])
+                try:
+                    subprocess.Popen(["xdg-open", "mailto:" + APWG_TO + "?subject=" + urllib.parse.quote("Phishing report: " + subject)
+                                      + "&body=" + urllib.parse.quote(body)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    text += " An email to the Anti-Phishing Working Group is open too: press Send for that second copy, or close it."
+                except OSError:
+                    pass
+            self.scam_report_note.setText(text)
             shield("log", "SCAMCHECK: reported to the anti-phishing groups", timeout=10)
             shield("ping", "scam-reported", timeout=10)
         else:

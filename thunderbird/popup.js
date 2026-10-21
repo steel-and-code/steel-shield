@@ -10,6 +10,10 @@
 "use strict";
 
 const REPORT_API = "https://steel-os.org/api/scam-report";
+// The Anti-Phishing Working Group takes reports by email only: after the
+// automatic report, a forward to them opens with the email attached; the
+// user presses Send for that second copy, or closes it.
+const APWG_TO = ["reportphishing@apwg.org"];
 
 async function openInBrowser(url) {
   try { await browser.windows.openDefaultBrowser(url); }
@@ -36,7 +40,15 @@ async function report(header, result) {
     });
     const d = await r.json();
     if (d.ok) {
-      note.textContent = d.text || "Reported. Nothing else to do.";
+      let text = d.text || "Reported.";
+      if (!d.apwg) {
+        try {
+          await browser.compose.beginForward(header.id, "forwardAsAttachment",
+            { to: APWG_TO, subject: "Phishing report: " + (header.subject || "(no subject)") });
+          text += " A forward to the Anti-Phishing Working Group is open too: press Send for that second copy, or close it.";
+        } catch (e) { /* no compose permission or window: the Netcraft report already went */ }
+      }
+      note.textContent = text;
       // Count-only ping for the "scams reported" number on steel-os.org: one
       // request for a tiny file, nothing about the email or the user.
       fetch("https://downloads.steel-os.org/ping/scam-reported?t=" + Date.now(), { cache: "no-store" }).catch(() => {});

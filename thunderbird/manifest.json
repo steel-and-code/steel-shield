@@ -12,7 +12,7 @@
     }
   },
   "icons": { "32": "icon.svg", "64": "icon.svg", "128": "icon.svg" },
-  "permissions": ["messagesRead", "https://dns.quad9.net/*", "https://downloads.steel-os.org/*", "https://steel-os.org/*"],
+  "permissions": ["messagesRead", "compose", "https://dns.quad9.net/*", "https://downloads.steel-os.org/*", "https://steel-os.org/*"],
   "message_display_action": {
     "default_title": "Is this a scam?",
     "default_label": "Is this a scam?",
