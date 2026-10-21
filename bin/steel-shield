@@ -136,6 +136,7 @@ is_allowed() {
 # id, no file name; the website's daily count of those requests is the number.
 PING_URL="https://downloads.steel-os.org/ping"
 ping_count() { # ping_count scam-reported|threat-caught|sample-shared|shield-installed
+    [[ -n "${STEEL_SHIELD_SELFTEST:-}" ]] && return 0   # the build's own test is not a catch
     (curl -fsS -m 5 -o /dev/null -H "Cache-Control: no-cache" "$PING_URL/$1?t=$(date +%s)" >/dev/null 2>&1 &)
 }
 
@@ -176,6 +177,7 @@ shareable() { # shareable path
 share_sample() { # share_sample id [force]
     local id="$1" force="${2:-}" f path name sum answer
     f="$QUAR/$id/file"; path="$(info_get "$id" path)"; name="$(basename -- "$path")"
+    [[ -n "${STEEL_SHIELD_SELFTEST:-}" ]] && return 0   # never share the build's test file
     [[ -f "$f" ]] || return 1
     if [[ -z "$force" ]]; then
         [[ -f "$CONF/share-off" ]] && return 0
@@ -650,8 +652,11 @@ case "${1:-dashboard}" in
         [[ -f "$2" ]] && printf '%s\t%s\n' "$2" "${3:-Behaviour.Suspicious}" | handle_detections ;;
     quarantine-scan) # behaviour watcher: scan one file now, quarantine if it is a known threat
         run_clamscan "$2" | handle_detections; record_scan "$(basename -- "$2")" ;;
-    selftest-scan) # used by the image build: scan, quarantine, restore without a desktop
+    selftest-scan) # used by the image build: scan, quarantine, restore without a desktop.
+        # Not a real catch: no count-only ping and no sharing (every image build
+        # used to add one to the website's "threats caught", 2026-10-21).
         shift
+        export STEEL_SHIELD_SELFTEST=1
         run_clamscan "$@" | while IFS=$'\t' read -r p s; do quarantine "$p" "$s"; done ;;
     *) echo "usage: steel-shield [dashboard|scan PATH...|restore ID|delete ID|status]" >&2; exit 2 ;;
 esac
