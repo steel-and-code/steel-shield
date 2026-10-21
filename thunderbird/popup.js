@@ -14,6 +14,9 @@ const REPORT_API = "https://steel-os.org/api/scam-report";
 // automatic report, a forward to them opens with the email attached; the
 // user presses Send for that second copy, or closes it.
 const APWG_TO = ["reportphishing@apwg.org"];
+// Google has no reporting API, only its form, which takes the link in the
+// address: it opens filled in, and the user presses Submit Report.
+const GOOGLE_REPORT = "https://safebrowsing.google.com/safebrowsing/report_phish/?url=";
 
 async function openInBrowser(url) {
   try { await browser.windows.openDefaultBrowser(url); }
@@ -47,6 +50,12 @@ async function report(header, result) {
             { to: APWG_TO, subject: "Phishing report: " + (header.subject || "(no subject)") });
           text += " A forward to the Anti-Phishing Working Group is open too: press Send for that second copy, or close it.";
         } catch (e) { /* no compose permission or window: the Netcraft report already went */ }
+      }
+      if (result.report_url) {
+        try {
+          await openInBrowser(GOOGLE_REPORT + encodeURIComponent(result.report_url));
+          text += " Google's report page is open with the link filled in: press Submit Report, or close it.";
+        } catch (e) { /* no browser: the Netcraft report already went */ }
       }
       note.textContent = text;
       // Count-only ping for the "scams reported" number on steel-os.org: one
