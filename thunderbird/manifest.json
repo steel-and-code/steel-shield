@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Steel Shield: Is this a scam?",
-  "description": "One click on any email: Looks safe, Be careful or Looks like a scam, with the reasons in plain English. Checks the sender, where every link really goes, attachments and the wording, on your computer. One more click reports a scam to the anti-phishing groups and Google, so it gets blocked for everyone.",
+  "description": "One click on any email: Looks safe, Be careful or Looks like a scam, with the reasons in plain English. Checks the sender, where every link really goes, attachments and the wording, on your computer. One more click reports a scam to the anti-phishing groups, so it gets blocked for everyone. Nothing else to do.",
   "version": "0.1",
   "author": "Steel & Code and Blackbox Entertainment",
   "homepage_url": "https://steel-os.org/steel-shield",
@@ -12,7 +12,7 @@
     }
   },
   "icons": { "32": "icon.svg", "64": "icon.svg", "128": "icon.svg" },
-  "permissions": ["messagesRead", "compose", "https://dns.quad9.net/*", "https://downloads.steel-os.org/*"],
+  "permissions": ["messagesRead", "compose", "https://dns.quad9.net/*", "https://downloads.steel-os.org/*", "https://steel-os.org/*"],
   "message_display_action": {
     "default_title": "Is this a scam?",
     "default_label": "Is this a scam?",
