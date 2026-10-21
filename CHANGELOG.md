@@ -4,8 +4,8 @@
 
 - **Your numbers:** one line under the status says what Steel Shield has done
   on this PC (threats caught, scams reported, programs shared with the
-  researchers), from the local history (`steel-shield counts`), with a link to
-  everyone's numbers on steel-os.org. Nothing is sent to count them.
+  researchers), from the local history (`steel-shield counts`), with an **All
+  threats caught** link to everyone's numbers on steel-os.org. Nothing is sent to count them.
 - First start of a standalone install (not on Steel OS) sends one count-only
   ping (`ping/shield-installed`) for the "installs" number on
   steel-os.org/steel-shield; nothing about the computer goes with it.

@@ -258,7 +258,7 @@ def numbers_line():
     parts = [plural(c["threats"], "threat") + " caught", plural(c["scams"], "scam") + " reported",
              plural(c["shared"], "program") + " shared with researchers"]
     return ("<b>On this PC:</b> " + " &nbsp;&middot;&nbsp; ".join(parts) + " &nbsp;&middot;&nbsp; "
-            f'<a href="https://steel-os.org/steel-shield" style="color:{BLUE}; text-decoration:none">Everyone\'s numbers</a>')
+            f'<a href="https://steel-os.org/steel-shield" style="color:{BLUE}; text-decoration:none">All threats caught</a>')
 
 
 def status_lines():
