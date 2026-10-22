@@ -1606,45 +1606,109 @@ class Window(QMainWindow):
         v.addStretch(1)
         return page
 
-    def add_thunderbird_button(self):
-        """Hand the add-on to Thunderbird itself, which asks "Add?" and installs it the normal way.
+    # Thunderbird on this PC: [(profile folder, how to start it)]. The Flatpak
+    # (both Flathub names) and an ordinary install.
+    TB_FLATPAKS = ("org.mozilla.thunderbird_esr", "org.mozilla.Thunderbird")
 
-        A file copied into the profile folder never showed a button on one PC
-        (STEEL report, 2026-10-21); Thunderbird opening the .xpi is the way
-        that always works, for the Flatpak and the ordinary install alike."""
+    def thunderbird_profiles(self):
+        found = []
+        for fid in self.TB_FLATPAKS:
+            root = HOME / ".var/app" / fid / ".thunderbird"
+            if root.is_dir():
+                found += [(d, ["flatpak", "run", fid]) for d in root.iterdir() if d.is_dir() and (d / "prefs.js").exists()]
+        for root in (HOME / ".thunderbird", HOME / "snap/thunderbird/common/.thunderbird"):
+            if root.is_dir():
+                found += [(d, ["thunderbird"]) for d in root.iterdir() if d.is_dir() and (d / "prefs.js").exists()]
+        return found
+
+    @staticmethod
+    def thunderbird_running(profiles):
+        # Thunderbird keeps a lock in each open profile; the Flatpak's processes are visible from here too.
+        if any((d / "lock").exists() or (d / ".parentlock").exists() for d, _ in profiles):
+            return True
+        return run("pgrep", "-x", "thunderbird", timeout=10)[0] == 0
+
+    def add_thunderbird_button(self):
+        """Put the add-on into Thunderbird's profile and switch it on.
+
+        Thunderbird installs an add-on found in the profile's extensions folder
+        at its next start, but leaves it switched off unless the
+        extensions.autoDisableScopes setting says otherwise (that is why the
+        button "never showed", STEEL reports of 2026-10-21). user.js sets that,
+        an earlier copy that Thunderbird already recorded as off is turned on
+        in its add-on list, and Thunderbird is closed and reopened so it all
+        takes effect. Opening the .xpi with Thunderbird does not work: it
+        starts a new email with the file attached."""
         xpi = Path(SCAM_XPI)
         if not xpi.is_file():
             QMessageBox.warning(self, "Steel Shield", "The Thunderbird add-on isn't on this computer yet. It comes with "
                                                       "the next Steel Shield update.")
             return
-        launch = None
-        for fid in ("org.mozilla.thunderbird_esr", "org.mozilla.Thunderbird"):
-            if (HOME / ".var/app" / fid).is_dir() or run("flatpak", "info", fid, timeout=15)[0] == 0:
-                # The Flatpak can only see files under its own folder.
-                dest = HOME / ".var/app" / fid / "steel-shield-scamcheck.xpi"
-                try:
-                    dest.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(xpi, dest)
-                except OSError:
-                    continue
-                launch = ["flatpak", "run", fid, str(dest)]
-                break
-        if launch is None and shutil.which("thunderbird"):
-            launch = ["thunderbird", str(xpi)]
-        if launch is None:
-            QMessageBox.information(self, "Steel Shield", "Thunderbird isn't installed yet. Install it from the Steel OS "
-                                                          "Portal (Steel Apps, Everyday), then click this again.")
+        profiles = self.thunderbird_profiles()
+        if not profiles:
+            QMessageBox.information(self, "Steel Shield", "Thunderbird hasn't been set up on this computer yet. Install it "
+                                                          "from the Steel OS Portal (Steel Apps, Everyday), open it once "
+                                                          "and set up your email, then click this again.")
             return
+        if self.thunderbird_running(profiles):
+            box = QMessageBox(QMessageBox.Icon.Question, "Steel Shield",
+                              "Thunderbird has to be closed for a moment to add the button. Close it now? It opens "
+                              "again by itself, with the button.", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, self)
+            if box.exec() != QMessageBox.StandardButton.Yes:
+                return
+            run("pkill", "-TERM", "-x", "thunderbird", timeout=10)
+            for _ in range(40):   # up to 20 s for a clean quit
+                if not self.thunderbird_running(profiles):
+                    break
+                time.sleep(0.5)
+            else:
+                QMessageBox.warning(self, "Steel Shield", "Thunderbird is still open. Close it yourself (File, Quit), "
+                                                          "then click this again.")
+                return
+        done = 0
+        for prof, _ in profiles:
+            try:
+                ext = prof / "extensions"
+                ext.mkdir(exist_ok=True)
+                shutil.copyfile(xpi, ext / "scamcheck@steel-os.org.xpi")
+                # Add-ons found in the profile are switched on, not left off.
+                userjs = prof / "user.js"
+                lines = userjs.read_text(encoding="utf-8", errors="replace").splitlines() if userjs.exists() else []
+                lines = [l for l in lines if "extensions.autoDisableScopes" not in l]
+                lines.append('user_pref("extensions.autoDisableScopes", 14);   // Steel Shield: add-ons in this profile start switched on')
+                userjs.write_text("\n".join(lines) + "\n", encoding="utf-8")
+                # A copy Thunderbird already knows and recorded as off: turn it on in its list.
+                reg = prof / "extensions.json"
+                if reg.exists():
+                    try:
+                        data = json.loads(reg.read_text(encoding="utf-8"))
+                        changed = False
+                        for a in data.get("addons", []):
+                            if a.get("id") == "scamcheck@steel-os.org" and (a.get("userDisabled") or not a.get("active", True)):
+                                a["userDisabled"] = False
+                                a["softDisabled"] = False
+                                a["active"] = True
+                                changed = True
+                        if changed:
+                            reg.write_text(json.dumps(data), encoding="utf-8")
+                    except (OSError, ValueError):
+                        pass
+                done += 1
+            except OSError:
+                pass
+        if not done:
+            QMessageBox.warning(self, "Steel Shield", "The add-on couldn't be copied into Thunderbird's folder.")
+            return
+        shield("log", "Thunderbird: Is this a scam? button added", timeout=10)
         try:
-            subprocess.Popen(launch, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
-        except OSError as e:
-            QMessageBox.warning(self, "Steel Shield", f"Thunderbird couldn't be opened: {e}")
-            return
-        shield("log", "Thunderbird: Is this a scam? button offered", timeout=10)
+            subprocess.Popen(profiles[0][1], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError:
+            pass
         QMessageBox.information(self, "Steel Shield",
-                                "Thunderbird is opening and will ask to add \"Steel Shield: Is this a scam?\". Click "
-                                "Add. Then open any email: the Is this a scam? button is in the message's toolbar. "
-                                "If Thunderbird was already open, the question appears in its window.")
+                                "Done. Thunderbird is opening with the button. Open any email: Is this a scam? is in the "
+                                "message's toolbar (the row of buttons above the email). If you don't see it there, "
+                                "Thunderbird menu, Add-ons and Themes: Steel Shield: Is this a scam? is in the list with "
+                                "its switch on.")
 
     def scam_check_text(self):
         text = self.scam_text.toPlainText().strip()
