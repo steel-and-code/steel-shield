@@ -1638,14 +1638,13 @@ class Window(QMainWindow):
 
     @staticmethod
     def thunderbird_running(profiles):
-        # While a profile is open Thunderbird keeps a "lock" symlink in it that
-        # points nowhere (os.path.lexists sees it; Path.exists would not), and
-        # removes it on a clean quit. .parentlock stays on disk forever, so it
-        # says nothing (it made the app think Thunderbird was still open,
-        # STEEL report of 2026-10-22). The process, Flatpak or not, runs from
-        # a lib/thunderbird/thunderbird path that is visible from here.
-        if any(os.path.lexists(d / "lock") for d, _ in profiles):
-            return True
+        # Only the running process counts. The profile's lock files are left
+        # behind whenever Thunderbird doesn't quit cleanly (the PC shut down
+        # with it open, a crash, a kill): .parentlock always, and the "lock"
+        # symlink too, so they kept saying "open" even after a restart with
+        # Thunderbird closed (STEEL reports of 2026-10-22). The process,
+        # Flatpak or not, runs from a lib/thunderbird/thunderbird path that is
+        # visible from here.
         return run("pgrep", "-f", "lib/thunderbird/thunderbird", timeout=10)[0] == 0
 
     def add_thunderbird_button(self):
