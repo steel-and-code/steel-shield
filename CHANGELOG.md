@@ -4,9 +4,12 @@
 
 - Check a message runs in the background with a moving bar; the window no
   longer freezes for the seconds a check can take.
-- **Add the button to Thunderbird** hands the add-on to Thunderbird itself,
-  which asks to add it (Flatpak and ordinary installs); the file copied into
-  the profile folder did not always show a button.
+- **Add the button to Thunderbird** works: the add-on goes into Thunderbird's
+  profile with a setting that switches add-ons found there on (Thunderbird
+  installs a sideloaded add-on switched off by default, which is why the
+  button never showed), an earlier copy is switched on, and Thunderbird is
+  closed and reopened. Handing the file to Thunderbird on its command line
+  only opened a new email with it attached.
 - **Report this scam** is one click with nothing else to do: the message goes
   to steel-os.org, which passes it straight on to Netcraft's reporting API and
   keeps nothing. An email to APWG opens as well, written and addressed, and
