@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Report a problem: **Choose pictures** attaches several screenshots or photos
+  at once (six at most, 5 MB each); the first choice replaces the automatic
+  screenshot, later ones add to it.
 - Check a message runs in the background with a moving bar; the window no
   longer freezes for the seconds a check can take.
 - **Add the button to Thunderbird** hands the add-on to Thunderbird itself,
