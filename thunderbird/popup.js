@@ -5,23 +5,12 @@
 // "Report this scam" feeds the community lists that already protect every
 // browser and mail provider (no list of our own): one click sends the email
 // to steel-os.org, which passes it straight on to Netcraft's reporting API
-// and to APWG by email, and keeps nothing. Nothing else to do.
+// (and to APWG by email, once the site can send email), and keeps nothing.
+// Nothing else to do: no forward to send, no web form to fill in.
 
 "use strict";
 
 const REPORT_API = "https://steel-os.org/api/scam-report";
-// The Anti-Phishing Working Group takes reports by email only: after the
-// automatic report, a forward to them opens with the email attached; the
-// user presses Send for that second copy, or closes it.
-const APWG_TO = ["reportphishing@apwg.org"];
-// Google has no reporting API, only its form, which takes the link in the
-// address: it opens filled in, and the user presses Submit Report.
-const GOOGLE_REPORT = "https://safebrowsing.google.com/safebrowsing/report_phish/?url=";
-
-async function openInBrowser(url) {
-  try { await browser.windows.openDefaultBrowser(url); }
-  catch (e) { await browser.tabs.create({ url }); }
-}
 
 async function report(header, result) {
   const btn = document.getElementById("reportbtn"), note = document.getElementById("reportnote");
@@ -43,21 +32,7 @@ async function report(header, result) {
     });
     const d = await r.json();
     if (d.ok) {
-      let text = d.text || "Reported.";
-      if (!d.apwg) {
-        try {
-          await browser.compose.beginForward(header.id, "forwardAsAttachment",
-            { to: APWG_TO, subject: "Phishing report: " + (header.subject || "(no subject)") });
-          text += " A forward to the Anti-Phishing Working Group is open too: press Send for that second copy, or close it.";
-        } catch (e) { /* no compose permission or window: the Netcraft report already went */ }
-      }
-      if (result.report_url) {
-        try {
-          await openInBrowser(GOOGLE_REPORT + encodeURIComponent(result.report_url));
-          text += " Google's report page is open with the link filled in: press Submit Report, or close it.";
-        } catch (e) { /* no browser: the Netcraft report already went */ }
-      }
-      note.textContent = text;
+      note.textContent = d.text || "Reported. Nothing else to do.";
       // Count-only ping for the "scams reported" number on steel-os.org: one
       // request for a tiny file, nothing about the email or the user.
       fetch("https://downloads.steel-os.org/ping/scam-reported?t=" + Date.now(), { cache: "no-store" }).catch(() => {});
@@ -130,6 +105,8 @@ async function run() {
   } catch (e) {
     title.textContent = "The check couldn't run";
     advice.textContent = String(e);
+  } finally {
+    document.getElementById("bar").hidden = true;
   }
 }
 

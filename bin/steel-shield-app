@@ -1654,9 +1654,8 @@ class Window(QMainWindow):
         at its next start, but leaves it switched off unless the
         extensions.autoDisableScopes setting says otherwise (that is why the
         button "never showed", STEEL reports of 2026-10-21). user.js sets that,
-        an earlier copy that Thunderbird already recorded as off is turned on
-        in its add-on list, and Thunderbird is closed and reopened so it all
-        takes effect. Opening the .xpi with Thunderbird does not work: it
+        Thunderbird forgets any earlier copy so it installs this one afresh,
+        and Thunderbird is closed and reopened so it all takes effect. Opening the .xpi with Thunderbird does not work: it
         starts a new email with the file attached."""
         xpi = Path(SCAM_XPI)
         if not xpi.is_file():
@@ -1696,20 +1695,24 @@ class Window(QMainWindow):
                 lines = [l for l in lines if "extensions.autoDisableScopes" not in l]
                 lines.append('user_pref("extensions.autoDisableScopes", 14);   // Steel Shield: add-ons in this profile start switched on')
                 userjs.write_text("\n".join(lines) + "\n", encoding="utf-8")
-                # A copy Thunderbird already knows and recorded as off: turn it on in its list.
+                # A copy Thunderbird already knows: make it forget that copy, so
+                # at its next start it installs this one as new, switched on and
+                # with the button in the toolbar. Marking the old entry as on was
+                # not enough: Thunderbird decides what to start from
+                # addonStartup.json.lz4, which still said off, so Add-ons showed
+                # it on but the button stayed away until it was switched off and
+                # on again (STEEL report of 2026-10-22). Without that file
+                # Thunderbird rebuilds it from the add-ons it finds.
                 reg = prof / "extensions.json"
                 if reg.exists():
                     try:
                         data = json.loads(reg.read_text(encoding="utf-8"))
-                        changed = False
-                        for a in data.get("addons", []):
-                            if a.get("id") == "scamcheck@steel-os.org" and (a.get("userDisabled") or not a.get("active", True)):
-                                a["userDisabled"] = False
-                                a["softDisabled"] = False
-                                a["active"] = True
-                                changed = True
-                        if changed:
+                        addons = data.get("addons", [])
+                        keep = [a for a in addons if a.get("id") != "scamcheck@steel-os.org"]
+                        if len(keep) != len(addons):
+                            data["addons"] = keep
                             reg.write_text(json.dumps(data), encoding="utf-8")
+                            (prof / "addonStartup.json.lz4").unlink(missing_ok=True)
                     except (OSError, ValueError):
                         pass
                 done += 1
