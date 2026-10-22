@@ -525,7 +525,7 @@ def multipart(fields, files):
     for name, value in fields.items():
         body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n").encode()
         body += str(value).encode("utf-8") + b"\r\n"
-    for name, (filename, mime, data) in files.items():
+    for name, (filename, mime, data) in (files.items() if isinstance(files, dict) else files):
         body += (f"--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"; filename=\"{filename}\"\r\n"
                  f"Content-Type: {mime}\r\n\r\n").encode()
         body += data + b"\r\n"
@@ -549,7 +549,9 @@ class ReportDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle("Report a problem or idea")
         self.setMinimumWidth(560)
-        self.shot = shot
+        # The screenshot taken when the button was clicked, or the pictures the
+        # person chose instead; several at once (T, 2026-10-21), 6 at most.
+        self.shots = [shot] if shot is not None else []
         self.details = report_details()
         v = QVBoxLayout(self)
         v.setContentsMargins(24, 24, 24, 24)
@@ -573,8 +575,8 @@ class ReportDialog(QDialog):
         self.see_btn = button("See it", small=True, slot=self.see_picture)
         self.see_btn.setVisible(shot is not None)
         row.addWidget(self.see_btn)
-        # A different screenshot, or a phone photo of the screen, instead (T, 2026-10-20).
-        row.addWidget(button("Choose a picture…", small=True, slot=self.choose_picture))
+        # Other screenshots, or phone photos of the screen, instead (T, 2026-10-20); several at once.
+        row.addWidget(button("Choose pictures…", small=True, slot=self.choose_picture))
         row.addStretch(1)
         v.addLayout(row)
         self.use_details = QCheckBox("Include these computer details")
@@ -594,26 +596,38 @@ class ReportDialog(QDialog):
         self.finished_send.connect(self.sent)
 
     def see_picture(self):
-        if self.shot is not None:
-            subprocess.Popen(["xdg-open", str(self.shot)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for p in self.shots:
+            subprocess.Popen(["xdg-open", str(p)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     def choose_picture(self):
-        f, _ = QFileDialog.getOpenFileName(self, "Choose a picture", str(HOME / "Pictures"), "Pictures (*.png *.jpg *.jpeg)")
-        if not f:
+        """The first choice replaces the automatic screenshot; later ones add to it."""
+        names, _ = QFileDialog.getOpenFileNames(self, "Choose pictures", str(HOME / "Pictures"), "Pictures (*.png *.jpg *.jpeg)")
+        if not names:
             return
-        p = Path(f)
-        if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
-            self.note.setText(f'<span style="color:{ORANGE}">Please choose a PNG or JPEG picture.</span>')
-            return
-        if p.stat().st_size > 5_000_000:
-            self.note.setText(f'<span style="color:{ORANGE}">That picture is too large (5 MB at most).</span>')
-            return
-        self.shot = p
-        self.use_shot.setText(f"Include this picture: {p.name}")
-        self.use_shot.setEnabled(True)
-        self.use_shot.setChecked(True)
-        self.see_btn.setVisible(True)
-        self.note.setText("")
+        if getattr(self, "_auto_only", True):
+            self.shots = []
+            self._auto_only = False
+        notes = []
+        for f in names:
+            p = Path(f)
+            if p.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+                notes.append(f"{p.name} is not a PNG or JPEG picture and was left out.")
+                continue
+            if p.stat().st_size > 5_000_000:
+                notes.append(f"{p.name} is too large (5 MB at most) and was left out.")
+                continue
+            if len(self.shots) >= 6:
+                notes.append("Six pictures at most; the rest were left out.")
+                break
+            if p not in self.shots:
+                self.shots.append(p)
+        if self.shots:
+            label_text = self.shots[0].name if len(self.shots) == 1 else f"{len(self.shots)} pictures: " + ", ".join(p.name for p in self.shots)
+            self.use_shot.setText("Include " + ("this picture: " if len(self.shots) == 1 else "these ") + label_text)
+        self.use_shot.setEnabled(bool(self.shots))
+        self.use_shot.setChecked(bool(self.shots))
+        self.see_btn.setVisible(bool(self.shots))
+        self.note.setText(f'<span style="color:{ORANGE}">{html.escape(" ".join(notes))}</span>' if notes else "")
 
     def do_send(self):
         title, text = self.title.text().strip(), self.text.toPlainText().strip()
@@ -628,14 +642,15 @@ class ReportDialog(QDialog):
         fields = {"kind": "idea" if self.kind.currentText() == "Idea" else "problem", "product": "steel-shield",
                   "title": title, "description": text, "website": "",
                   "details": self.details if self.use_details.isChecked() else ""}
-        files = {}
-        if self.shot is not None and self.use_shot.isChecked():
-            try:
-                jpeg = self.shot.suffix.lower() in (".jpg", ".jpeg")
-                files["screenshot"] = ("screenshot.jpg" if jpeg else "screenshot.png",
-                                       "image/jpeg" if jpeg else "image/png", self.shot.read_bytes())
-            except OSError:
-                pass
+        files = []
+        if self.use_shot.isChecked():
+            for i, p in enumerate(self.shots, 1):
+                try:
+                    jpeg = p.suffix.lower() in (".jpg", ".jpeg")
+                    files.append(("screenshot", (f"screenshot-{i}." + ("jpg" if jpeg else "png"),
+                                                 "image/jpeg" if jpeg else "image/png", p.read_bytes())))
+                except OSError:
+                    pass
 
         def work():
             try:
