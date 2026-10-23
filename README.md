@@ -84,7 +84,7 @@ major.minor.start to begin at a given number); 1.0 is a decision, made by
 changing it. Each release is on GitHub with a source
 archive; steel-os.org/steel-shield shows the newest.
 
-## Behaviour watching
+## Behavior watching
 
 Definitions only know threats that have been seen before, so Steel Shield also
 watches what programs do. A program counts as **untrusted** when it runs from
@@ -172,6 +172,6 @@ week even when nothing changes. See [MAINTAINERS.md](MAINTAINERS.md) for the
 rules that keep it from going unmaintained, and
 [CONTRIBUTING.md](CONTRIBUTING.md) to help.
 
-## Licence
+## License
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).

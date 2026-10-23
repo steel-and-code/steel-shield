@@ -226,7 +226,7 @@ def icon_svg(key, color):
 CARDS = [
     ("defs", "Virus definitions", "Up to date", "Needs fixing"),
     ("downloads", "Download scanning", "On", "Off"),
-    ("guard", "Behaviour watching", "On", "Off"),
+    ("guard", "Behavior watching", "On", "Off"),
     ("firewall", "Firewall", "On", "Off"),
     ("signed", "System updates", "Signature-checked", "Not yet"),
     ("sandbox", "App sandbox", "Always on", "Off"),
@@ -287,7 +287,7 @@ def status_lines():
                 ("ok", "System updates are signature-checked.", "signed"),
                 ("ok", "Secure Boot is off (optional).", "secureboot"),
                 ("ok", "Apps run in their own sandbox, and system files are read-only.", "sandbox"),
-                ("ok", "Behaviour watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.", "guard"),
+                ("ok", "Behavior watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.", "guard"),
                 ("ok", "Dangerous-website blocking is off (optional).", "web"),
                 ("ok", "Caught programs are shared with the researchers at abuse.ch automatically, so everyone's protection improves. Never documents or pictures.", "share")]
     out = []
@@ -321,7 +321,7 @@ def quarantine_items():
     return sorted(items, key=lambda i: i[0], reverse=True)
 
 
-SWITCH_NAMES = {"downloads": "Download scanning", "guard": "Behaviour watching", "firewall": "Firewall",
+SWITCH_NAMES = {"downloads": "Download scanning", "guard": "Behavior watching", "firewall": "Firewall",
                 "web": "Dangerous-website blocking", "share": "Sharing with researchers"}
 
 
