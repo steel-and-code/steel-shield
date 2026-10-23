@@ -55,20 +55,12 @@ SYSQ_INDEX = Path("/var/lib/steel-shield/quarantine.tsv")
 CONF = Path(os.environ.get("XDG_CONFIG_HOME", HOME / ".config")) / "steel-shield"
 SCAM_ON = CONF / "scamcheck-on"
 # "Report this scam" feeds the community lists that already protect every
-# browser and mail provider (no list of our own): the message goes to APWG and
-# Netcraft from the user's own mail app, and Google gets the scam link.
-# One click reports a scam through steel-os.org, which passes the message
-# straight on to the anti-phishing groups (Netcraft's reporting API, and APWG
-# by email); nothing is stored there. steel-os.org/privacy says so. (T,
-# 2026-10-21: one button, nothing else to do.)
+# browser and mail provider (no list of our own). One click reports a scam
+# through steel-os.org, which passes the message straight on to Netcraft's
+# reporting API (and to APWG by email, once the site can send email); nothing
+# is stored there. steel-os.org/privacy says so. Nothing else opens: no email
+# to send by hand, no web form (T, 2026-10-21: one button, nothing else to do).
 REPORT_API = os.environ.get("STEEL_OS_SCAM_REPORT_URL", "https://steel-os.org/api/scam-report")
-# The Anti-Phishing Working Group takes reports by email only, so after the
-# automatic report an email to them opens, written and addressed; the person
-# presses Send if they want that second copy (T, 2026-10-21).
-APWG_TO = "reportphishing@apwg.org"
-# Google has no reporting API, only its form, which takes the link in the
-# address: it opens filled in, and the person presses Submit Report.
-GOOGLE_REPORT = "https://safebrowsing.google.com/safebrowsing/report_phish/?url="
 # "Report a problem or idea": the same report service as Steel OS (a Bug or a
 # Story in the team's tracker, screenshot attached, no account). Works on any
 # Linux Steel Shield runs on.
@@ -76,6 +68,18 @@ REPORT_URL = os.environ.get("STEEL_OS_REPORT_URL", "https://steel-os.org/api/rep
 REPORT_SITE = os.environ.get("STEEL_OS_SITE", "https://steel-os.org")
 # Every report sent from this PC, with its private key (My reports in the Steel OS Portal).
 REPORT_STORE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state") / "steel-os" / "reports.json"
+
+
+def install_id():
+    """The installation's anonymous ID, sent with reports so someone who abuses
+    them can be banned without anyone signing up: the PC's random machine ID,
+    hashed with the report window's name (the same ID steel-os-report sends),
+    so it matches nothing else and can't be turned back. "" without one."""
+    try:
+        mid = Path("/etc/machine-id").read_text().strip()
+    except OSError:
+        return ""
+    return hashlib.sha256(f"steel-os-report:{mid}".encode()).hexdigest()[:32] if mid else ""
 
 
 def remember_report(key, token, title, kind):
@@ -567,6 +571,9 @@ class ReportDialog(QDialog):
         self.text = QPlainTextEdit(placeholderText="What happened, or what you would like. What did you click, what did you expect?")
         self.text.setMinimumHeight(140)
         v.addWidget(self.text)
+        self.contact = QLineEdit(placeholderText="How can we reach you? Optional: an email or Discord name, only to ask you something")
+        self.contact.setMaxLength(200)
+        v.addWidget(self.contact)
         self.use_shot = QCheckBox("Include the screenshot (taken when you clicked the button)")
         self.use_shot.setChecked(shot is not None)
         self.use_shot.setEnabled(shot is not None)
@@ -641,6 +648,7 @@ class ReportDialog(QDialog):
         self.note.setText("Sending…")
         fields = {"kind": "idea" if self.kind.currentText() == "Idea" else "problem", "product": "steel-shield",
                   "title": title, "description": text, "website": "",
+                  "contact": self.contact.text().strip(), "install_id": install_id(),
                   "details": self.details if self.use_details.isChecked() else ""}
         files = []
         if self.use_shot.isChecked():
@@ -1590,9 +1598,7 @@ class Window(QMainWindow):
         row.addStretch(1)
         rp.addLayout(row)
         self.scam_report_note = label("One click sends the message to Netcraft, who get it blocked in browsers and mail services "
-                                      "everywhere (it goes through steel-os.org and isn't kept there). An email to the Anti-Phishing "
-                                      "Working Group opens too, already written (press Send), and Google's report page with the link "
-                                      "filled in (press Submit Report). Both are extra copies: close them if you like.",
+                                      "everywhere (it goes through steel-os.org and isn't kept there). Nothing else to do.",
                                       cls="muted", wrap=True)
         rp.addWidget(self.scam_report_note)
         rl.addWidget(self.scam_report)
@@ -1775,26 +1781,7 @@ class Window(QMainWindow):
 
     def scam_reported(self, answer):
         if answer.get("ok"):
-            text = answer.get("text") or "Reported."
-            if not answer.get("apwg"):
-                subject = self.scam_last.get("subject") or "(no subject)"
-                body = ("Reported with Steel Shield (https://steel-os.org/steel-shield). The message, as received:\n\n"
-                        + self.scam_raw[:4000])
-                try:
-                    subprocess.Popen(["xdg-open", "mailto:" + APWG_TO + "?subject=" + urllib.parse.quote("Phishing report: " + subject)
-                                      + "&body=" + urllib.parse.quote(body)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    text += " An email to the Anti-Phishing Working Group is open too: press Send for that second copy, or close it."
-                except OSError:
-                    pass
-            url = self.scam_last.get("report_url")
-            if url:
-                try:
-                    subprocess.Popen(["xdg-open", GOOGLE_REPORT + urllib.parse.quote(url, safe="")],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                    text += " Google's report page is open with the link filled in: press Submit Report, or close it."
-                except OSError:
-                    pass
-            self.scam_report_note.setText(text)
+            self.scam_report_note.setText(answer.get("text") or "Reported. Nothing else to do.")
             shield("log", "SCAMCHECK: reported to the anti-phishing groups", timeout=10)
             shield("ping", "scam-reported", timeout=10)
         else:
