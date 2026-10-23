@@ -69,10 +69,10 @@ button to Thunderbird** copies it into Thunderbird's profile; or install it
 from Add-ons and Themes, *Install Add-on From File*.
 
 **Report this scam** (app and add-on) feeds the community lists that already
-protect every browser and mail provider, instead of a list of our own: a
-forward of the message to APWG (reportphishing@apwg.org) and Netcraft
-(scam@netcraft.com), which the user sends, and Google's report form for the
-scam link. The only thing Steel Shield itself sends is a count-only ping
+protect every browser and mail provider, instead of a list of our own: one
+click sends the message through steel-os.org/api/scam-report, which passes it
+straight on to Netcraft's reporting API and keeps nothing. Nothing else opens
+and there is nothing else to do. The only thing Steel Shield itself sends is a count-only ping
 (`steel-shield ping scam-reported` / `threat-caught`: one fetch of a tiny file
 on downloads.steel-os.org) for the numbers on steel-os.org/steel-shield.
 
