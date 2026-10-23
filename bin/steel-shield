@@ -67,7 +67,7 @@ explain() {
         return
     fi
     case "$lower" in
-        behaviour.*)            platform="a program" ;;
+        behavior.*|behaviour.*)            platform="a program" ;;
         steelshield.extra.*)    platform="a file" ;;
         pua.*|*.pua.*)          platform="a program or file" ;;
         win.*|*win32*|*w32*)    platform="a Windows program" ;;
@@ -408,11 +408,11 @@ status_lines() { # prints "ok|warn<TAB>text<TAB>key" lines (the key is for the a
         echo -e "ok\tSystem files are read-only.\tsandbox"
     fi
     if mokutil --sb-state 2>/dev/null | grep -qi enabled; then echo -e "ok\tSecure Boot is on.\tsecureboot"; else echo -e "ok\tSecure Boot is off (optional).\tsecureboot"; fi
-    # Behaviour watching.
-    if [[ -f "$CONF/guard-off" ]]; then echo -e "warn\tBehaviour watching is switched off.\tguard"
+    # Behavior watching.
+    if [[ -f "$CONF/guard-off" ]]; then echo -e "warn\tBehavior watching is switched off.\tguard"
     elif systemctl --user is-active --quiet steel-shield-guard.service; then
-        echo -e "ok\tBehaviour watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.\tguard"
-    else echo -e "warn\tBehaviour watching isn't running.\tguard"; fi
+        echo -e "ok\tBehavior watching is on: startup changes, file scrambling, hidden miners and newly runnable downloads.\tguard"
+    else echo -e "warn\tBehavior watching isn't running.\tguard"; fi
     local extra=/var/lib/clamav/steel-shield-extra.hsb
     if [[ -s "$extra" ]] && (( ($(date +%s) - $(stat -c %Y "$extra")) < 4 * 86400 )); then
         echo -e "ok\tThe extra list of new threats (abuse.ch) is up to date.\textra"
@@ -437,8 +437,8 @@ dashboard() {
         [[ $warn == yes ]] && items=(fix "Fix now" "${items[@]}")
         if [[ -f "$CONF/downloads-off" ]]; then items+=(toggle "Turn download scanning on")
         else items+=(toggle "Turn download scanning off"); fi
-        if [[ -f "$CONF/guard-off" ]]; then items+=(guard "Turn behaviour watching on")
-        else items+=(guard "Turn behaviour watching off"); fi
+        if [[ -f "$CONF/guard-off" ]]; then items+=(guard "Turn behavior watching on")
+        else items+=(guard "Turn behavior watching off"); fi
         if "$LIBEXEC/steel-shield-dns" status 2>/dev/null | grep -qx on; then items+=(dns "Stop blocking dangerous websites")
         else items+=(dns "Block dangerous websites for every app"); fi
         choice="$(kdialog --title "$APP" --icon "$ICON" --geometry 560x520 --menu "$text" "${items[@]}")" || exit 0
@@ -648,9 +648,9 @@ case "${1:-dashboard}" in
     details) details "$2" ;;
     status) status_lines ;;
     explain) explain "$2" ;;
-    quarantine-file) # behaviour watcher: quarantine a stopped program (path signature)
-        [[ -f "$2" ]] && printf '%s\t%s\n' "$2" "${3:-Behaviour.Suspicious}" | handle_detections ;;
-    quarantine-scan) # behaviour watcher: scan one file now, quarantine if it is a known threat
+    quarantine-file) # behavior watcher: quarantine a stopped program (path signature)
+        [[ -f "$2" ]] && printf '%s\t%s\n' "$2" "${3:-Behavior.Suspicious}" | handle_detections ;;
+    quarantine-scan) # behavior watcher: scan one file now, quarantine if it is a known threat
         run_clamscan "$2" | handle_detections; record_scan "$(basename -- "$2")" ;;
     selftest-scan) # used by the image build: scan, quarantine, restore without a desktop.
         # Not a real catch: no count-only ping and no sharing (every image build

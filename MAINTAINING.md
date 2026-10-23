@@ -15,7 +15,7 @@ needs changing.
 
 The **Test** workflow runs every Monday on Fedora and Ubuntu with the newest
 packages, and once with the real ClamAV definitions. If it fails, it opens an
-issue labelled `weekly-check-failed`. Whoever sees it first fixes it or
+issue labeled `weekly-check-failed`. Whoever sees it first fixes it or
 assigns it.
 
 ## Making a release

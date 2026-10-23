@@ -127,7 +127,7 @@ def registrable(host):
 
 
 def core(domain):
-    """The part before the ending, with look-alike characters normalised: paypa1 -> paypal."""
+    """The part before the ending, with look-alike characters normalized: paypa1 -> paypal."""
     d = registrable(domain)
     name = d.split(".")[0] if "." in d else d
     name = name.translate(CONFUSABLE).replace("rn", "m").replace("vv", "w").replace("cl", "d") if False else name.translate(CONFUSABLE)

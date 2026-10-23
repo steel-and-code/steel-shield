@@ -1,7 +1,7 @@
 #!/usr/bin/bash
-# Steel Shield behaviour watching. A scanner only catches known
+# Steel Shield behavior watching. A scanner only catches known
 # threats; this watches what programs do, the way macOS and Windows Defender
-# also watch behaviour. Runs as the logged-in user (steel-shield-guard.service)
+# also watch behavior. Runs as the logged-in user (steel-shield-guard.service)
 # and needs no admin rights: a user may pause and stop their own programs.
 #
 #   startup watch   something sets itself to start at login
@@ -253,7 +253,7 @@ startup_watch() {
     done
 }
 
-# ---- File guard (ransomware-like behaviour) ---------------------------------
+# ---- File guard (ransomware-like behavior) ---------------------------------
 personal_dirs() {
     local d
     for k in DOCUMENTS DESKTOP PICTURES MUSIC VIDEOS; do
@@ -313,7 +313,7 @@ file_guard() {
             continue
         fi
         for pid in "${suspects[@]}"; do
-            pause_and_ask "$pid" "Behaviour.Ransomware-like" \
+            pause_and_ask "$pid" "Behavior.Ransomware-like" \
                 "A program is changing many of your files" \
                 "$(program_name "$pid") changed or renamed $GUARD_FILES or more of your files in seconds, the way ransomware does. If you didn't start a big edit or backup with it, stop it."
         done
@@ -337,7 +337,7 @@ miner_watch() {
                 if (( hot[$pid] >= MINER_CHECKS )); then
                     unset 'hot[$pid]'
                     is_allowed_program "$(process_origin "$pid")" && continue
-                    pause_and_ask "$pid" "Behaviour.CoinMiner-like" \
+                    pause_and_ask "$pid" "Behavior.CoinMiner-like" \
                         "A hidden program is working your processor hard" \
                         "$(program_name "$pid") has used the processor heavily for $((MINER_CHECKS * MINER_INTERVAL / 60)) minutes from $(dirname -- "$(process_origin "$pid")"), the way hidden cryptocurrency miners do."
                 fi
@@ -385,7 +385,7 @@ selftest() {
 
 case "${1:-run}" in
     run)
-        [[ -f "$CONF/guard-off" ]] && { echo "Behaviour watching is off."; exit 0; }
+        [[ -f "$CONF/guard-off" ]] && { echo "Behavior watching is off."; exit 0; }
         mkdir -p "$DATA" "$STATE" "$CONF" "$COPIES" "$REMOVED"
         touch "$ALLOWED_PROGS" "$LOG"
         startup_watch & file_guard & miner_watch & run_check &
